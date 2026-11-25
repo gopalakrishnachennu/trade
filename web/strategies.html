@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · STRATEGIES</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+</head><body>
+<main>
+<h1>STRATEGIES <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="top"></div>
+<div class="panel"><table id="tbl"><thead><tr>
+<th>Strategy</th><th class="n">Trades</th><th class="n">Open</th><th class="n">Win rate</th><th class="n">P&amp;L</th><th class="n">Today</th><th class="n">Profit factor</th><th class="n">Max DD</th><th class="n">Brier</th><th>Calibration (pred vs actual)</th><th>Params</th><th></th></tr></thead><tbody></tbody></table>
+<div class="mut" style="font-size:11px;margin-top:6px">Every strategy trades a <b>virtual $1,000 paper book</b> in shadow (same sizing, risk gates, profit lock and settlement as the main book). Only the <b>active</b> strategy drives the main paper book. All strategies must pass the data-quality rules (strike, timing, spread, liquidity, ask band); they differ in edge threshold and filters. Brier = mean (p − outcome)²; lower is better, 0.25 = coin flip.</div>
+</div>
+<h2>GATE &amp; REVIEWER SETTINGS</h2>
+<div class="panel" id="settings"></div>
+<h2>PROPOSALS, GATE DECISIONS &amp; SWITCHES <a id="dcsv" href="#" style="font-weight:400">csv</a></h2>
+<div class="panel"><table id="dec"><thead><tr><th>Time (ET)</th><th>Kind</th><th>Source</th><th>Suggestion</th><th>Gate</th><th>Status / message</th><th></th></tr></thead><tbody></tbody></table></div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+document.getElementById("dcsv").href = "/api/export/decisions.csv?" + PM.Q;
+function calib(cal) {
+  const W = 120, H = 60, pts = (cal || []).filter(b => b.n > 0);
+  if (!pts.length) return '<span class="mut">no settled trades</span>';
+  const x = p => 4 + p * (W - 8), y = f => H - 4 - f * (H - 8);
+  const dots = pts.map(b => `<circle cx="${x(b.avg_p).toFixed(1)}" cy="${y(b.freq).toFixed(1)}" r="${Math.min(5, 1.5 + Math.sqrt(b.n) / 2).toFixed(1)}" fill="#4ec4ff" opacity=".85"><title>pred ${(b.avg_p*100).toFixed(0)}% · actual ${(b.freq*100).toFixed(0)}% · n=${b.n}</title></circle>`).join("");
+  return `<svg width="${W}" height="${H}" style="background:#0b0d10;border:1px solid #2a3140"><line x1="${x(0)}" y1="${y(0)}" x2="${x(1)}" y2="${y(1)}" stroke="#8b95a8" stroke-dasharray="2,2"/>${dots}</svg>`;
+}
+async function load() {
+  const d = await PM.get("/api/strategies");
+  const m = d.metrics || {}, act = d.active || {}, S = m.strategies || {};
+  const rvs = d.reviewer || {}, rc = d.reviewer_config || {};
+  document.getElementById("sum").textContent = `· active: ${act.active} (v${act.version || 0}) · metrics ${m.ts ? PM.ago(m.ts) : "not yet"}`;
+  document.getElementById("top").innerHTML = `<div class="kv">
+    <span>Active strategy</span><span><b class="amb">${PM.esc(act.active)}</b> <span class="mut">since ${act.changed_at ? PM.et(act.changed_at) : "start"} · ${PM.esc(act.reason || "")}${act.actor ? " · by " + PM.esc(act.actor) : ""}</span></span>
+    <span>Reviewer</span><span>${rc.provider ? `<b class="cy">${PM.esc(rc.provider)}</b> / ${PM.esc(rc.model)}` : 'no LLM configured — deterministic ranking (<a href="/integrations?' + PM.Q + '">connect one</a>)'} · hourly + manual</span>
+    <span>Last review</span><span class="${rvs.ok === false ? "neg" : ""}">${rvs.last_run ? `${PM.et(rvs.last_run)} (${PM.esc(rvs.trigger)}, ${PM.esc(rvs.source || "")})` : "never"} ${rvs.ok === false ? "· <b>DEGRADED</b>: " + PM.esc(rvs.error) + " — current strategy kept" : ""}</span>
+  </div><div style="margin-top:8px"><button class="pri" id="rn">Run review now</button> <span id="rnmsg" class="msg"></span></div>`;
+  document.getElementById("rn").onclick = async () => {
+    const el = document.getElementById("rnmsg"); el.textContent = "reviewing…";
+    try { const r = await PM.send("POST", "/api/strategies/review", {}); el.textContent = r.result.message || r.result.status; load(); } catch (e) { el.textContent = "error: " + e.message; }
+  };
+  document.querySelector("#tbl tbody").innerHTML = Object.entries(S).map(([n, s]) => {
+    const x = s.metrics || {}, t = s.today || {}, isA = n === m.active;
+    const prm = Object.entries(s.params || {}).filter(([k, v]) => v !== null && !((k === "min_prob" || k === "min_ask") && v === 0) && !((k === "max_ask" || k === "max_frac_left") && v === 1)).map(([k, v]) => `${k}=${v}`).join(" ") || "config defaults";
+    return `<tr><td><b class="${isA ? "amb" : ""}">${PM.esc(n)}</b> ${isA ? '<span class="pill on">ACTIVE</span>' : '<span class="pill">shadow</span>'}<div class="mut" style="max-width:280px;white-space:normal">${PM.esc(s.description)}</div></td>
+      <td class="n">${x.trades ?? 0}</td><td class="n">${x.open ?? 0}</td><td class="n">${PM.pct(x.win_rate)}</td>
+      <td class="n ${x.pnl >= 0 ? "pos" : "neg"}">${PM.susd(x.pnl)}</td><td class="n">${PM.susd(t.pnl)}<div class="mut">${PM.esc(t.phase || "")}</div></td>
+      <td class="n">${x.profit_factor ?? "—"}</td><td class="n neg">${PM.usd(x.max_drawdown)}</td><td class="n">${x.brier ?? "—"}</td>
+      <td>${calib(x.calibration)}</td><td class="mut" style="white-space:normal;max-width:200px">${PM.esc(prm)}</td>
+      <td><a href="/api/export/strategy/${n}.csv?${PM.Q}">csv</a></td></tr>`;
+  }).join("") || `<tr><td colspan="12" class="mut">Shadow books start with the strategy_lab process; metrics appear within ~10s.</td></tr>`;
+  const st = d.settings || {};
+  const fields = [["auto_promote", "Auto-promote when the gate passes", "bool"], ["min_trades", "Min settled trades"], ["min_margin_usd", "Min P&L margin $"], ["min_margin_pct", "Min margin (fraction of bankroll)"], ["max_dd_ratio", "Max drawdown ratio vs active"], ["min_profit_factor", "Min profit factor"], ["max_brier", "Max Brier"], ["cooldown_hours", "Cooldown between switches (h)"], ["review_interval_min", "Review interval (min)"], ["max_step_frac", "Max param step per review"]];
+  document.getElementById("settings").innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 14px">${fields.map(([k, l, kind]) => `<label class="mut">${l}<br>${kind === "bool" ? `<input type="checkbox" data-k="${k}" ${st[k] ? "checked" : ""}>` : `<input data-k="${k}" value="${st[k]}" size="8"> <span style="font-size:10px">${d.settings_bounds[k] ? d.settings_bounds[k].join("–") : ""}</span>`}</label>`).join("")}</div>
+    <div style="margin-top:8px"><button id="ss">Save settings</button> <span id="ssmsg" class="msg"></span></div>
+    <div class="mut" style="font-size:11px;margin-top:6px">The gate is deterministic and works without any LLM: a candidate must have ≥ min trades, beat the active strategy's P&amp;L by the margin, have drawdown not worse (ratio + $5 slack), profit factor and Brier within limits, and respect the cooldown. LLM parameter tweaks are clamped to bounds and to a max step, and apply to shadow books only.</div>`;
+  document.getElementById("ss").onclick = async () => {
+    const body = {}; document.querySelectorAll("#settings [data-k]").forEach(i => body[i.dataset.k] = i.type === "checkbox" ? i.checked : Number(i.value));
+    const el = document.getElementById("ssmsg"); try { await PM.send("POST", "/api/strategies/settings", body); el.textContent = "saved"; load(); } catch (e) { el.textContent = "error: " + e.message; }
+  };
+  const dec = (d.decisions || []).slice().reverse();
+  document.querySelector("#dec tbody").innerHTML = dec.map(x => {
+    const g = x.gate ? (x.gate.passed ? '<span class="pos">PASS</span>' : '<span class="neg">FAIL</span>') + `<div class="mut" style="white-space:normal;max-width:300px">${x.gate.checks.map(c => `${c.passed ? "✓" : "✗"} ${PM.esc(c.rule)} (${PM.esc(c.detail)})`).join("<br>")}</div>` : "";
+    const pending = x.kind === "proposal" && x.status === "pending" && !x.resolved;
+    return `<tr><td class="mut">${PM.et(x.ts)}</td><td>${PM.esc(x.kind)}</td><td>${PM.esc(x.source || x.actor || "")}${x.provider ? `<div class="mut">${PM.esc(x.provider)}/${PM.esc(x.model)}</div>` : ""}</td>
+      <td>${x.suggested ? `<b>${PM.esc(x.suggested)}</b>` : x.to ? `${PM.esc(x.from)} → <b>${PM.esc(x.to)}</b>` : ""}${x.rationale ? `<div class="mut" style="white-space:normal;max-width:300px">${PM.esc(x.rationale)}</div>` : ""}${x.tweaks && Object.keys(x.tweaks).length ? `<div class="cy">tweaks: ${PM.esc(JSON.stringify(x.tweaks))}</div>` : ""}</td>
+      <td>${g}</td><td style="white-space:normal;max-width:360px">${PM.esc(x.status || "")} ${x.resolved ? "(resolved)" : ""}<div class="mut">${PM.esc(x.message || "")}</div></td>
+      <td>${pending ? `<button class="pri" onclick="act('${x.id}','approve')">Approve</button> <button onclick="act('${x.id}','reject')">Reject</button>` : ""}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="mut">No reviews yet. Press “Run review now” or wait for the hourly review.</td></tr>`;
+}
+async function act(id, a) {
+  if (a === "approve" && !confirm("Switch the main paper book to this strategy now?")) return;
+  try { await PM.send("POST", `/api/strategies/proposals/${id}/${a}`, {}); load(); } catch (e) { alert(e.message); }
+}
+load(); setInterval(load, 15000);
+</script>
+</body></html>

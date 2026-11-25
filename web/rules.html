@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:," />
+<title>PM US · RULES, VERDICTS &amp; CONTROLS</title>
+<style>
+:root{--bg:#0b0d10;--row:#11141a;--line:#2a3140;--text:#d6deea;--muted:#8b95a8;--amber:#f5c14a;--green:#3dd68c;--red:#ff5d5d;--cyan:#4ec4ff;--mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font:12px/1.5 var(--mono)}
+a{color:var(--cyan);text-decoration:none}
+header{display:flex;gap:14px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);background:#090b0e;position:sticky;top:0}
+.brand{color:var(--amber);font-weight:700;letter-spacing:.08em}.badge{font-weight:800;padding:1px 8px}
+main{padding:10px 14px 40px;max-width:1300px}
+h2{font-size:11px;letter-spacing:.1em;color:var(--amber);margin:18px 0 6px}
+p,li{color:#c3ccda;max-width:1050px}
+table{width:100%;border-collapse:collapse;margin-top:4px}
+th{text-align:left;color:var(--muted);font-size:10px;padding:3px 6px;border-bottom:1px solid var(--line)}
+td{padding:3px 6px;border-bottom:1px solid #1a1f28;vertical-align:top}
+code{color:var(--amber)}.pos{color:var(--green)}.neg{color:var(--red)}.mut{color:var(--muted)}
+.v{font-weight:700;padding:0 4px}.vb{background:var(--green);color:#04140c}.vn{color:var(--amber)}.vh{color:var(--cyan)}
+</style>
+<style>#pm-nav{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:4px 10px;border-bottom:1px solid #2a3140;background:#07090c;font:11px "IBM Plex Mono",ui-monospace,Menlo,monospace}#pm-nav .brand{font-weight:700;letter-spacing:.08em;color:#f5c14a}#pm-nav a{color:#8b95a8}#pm-nav a.cur{color:#d6deea;border-bottom:1px solid #f5c14a}#pm-nav .hp{margin-left:auto;display:flex;gap:6px;align-items:center}#pm-nav .st{font-weight:800;padding:1px 6px;border-radius:2px;font-size:10.5px;letter-spacing:.06em;cursor:pointer}#pm-nav .st-OK{background:#123d27;color:#3dd68c}#pm-nav .st-DEGRADED{background:#3d3112;color:#f5c14a}#pm-nav .st-FAILED,#pm-nav .st-HALTED{background:#4a1414;color:#ff5d5d}#pm-nav .mut{color:#8b95a8}</style>
+</head>
+<body>
+<header><span class="brand">PM US PAPER · RULES</span><span class="badge" id="sys">…</span><a id="term" href="#">← TERMINAL</a><span id="clock" class="mut" style="margin-left:auto"></span></header>
+<main>
+<p>Every paper decision is a mechanical check. The engine evaluates both sides (UP and DOWN) of the live window for each asset × horizon once per second. A side can trade only if it passes <b>all six rules</b> and then <b>all portfolio gates</b>. The grid's <b>Reason</b> column shows the first thing that blocks the better side; click a grid row on the terminal for the full checklist with numbers.</p>
+
+<h2>ACTIVE RULES (LIVE THRESHOLDS, INCLUDING OPERATOR CONTROLS)</h2>
+<table id="rules"><thead><tr><th>Rule</th><th>Requires</th><th>Threshold now</th><th>Reason text when it fails</th></tr></thead><tbody></tbody></table>
+
+<h2>PORTFOLIO GATES (CHECKED AFTER THE RULES)</h2>
+<table><thead><tr><th>Gate</th><th>Blocks when</th><th>Reason text</th></tr></thead><tbody>
+<tr><td>HALT latch</td><td>Any fail-closed trip (stale data, sequence mismatch, exception, non-paper mode). First reason wins and stays latched.</td><td><code>system HALTED: entries blocked until manual reset</code></td></tr>
+<tr><td>Operator pause</td><td>"Pause new entries" is on, or a flatten was requested.</td><td><code>passes rules, but entries paused by operator</code></td></tr>
+<tr><td>Asset / horizon enabled</td><td>The operator unticked that asset or horizon.</td><td><code>disabled by operator</code> (verdict OFF)</td></tr>
+<tr><td>Daily target / loss limit</td><td>Today's realized P&amp;L ≥ +target% or ≤ −limit% of starting equity. Blocks new entries only; open positions settle normally.</td><td><code>passes rules, but daily target hit: entries paused</code></td></tr>
+<tr><td>One position per market</td><td>Already holding this window.</td><td><code>already holding this market</code> (verdict HOLD)</td></tr>
+<tr><td>Max concurrent positions</td><td>Open positions at the cap.</td><td><code>passes rules, but at max N open positions</code></td></tr>
+<tr><td>Kelly stake</td><td>Fractional Kelly × bankroll, capped by max fraction, max contracts and max $ per bet, rounds to $0.</td><td><code>Kelly stake rounds to $0</code></td></tr>
+</tbody></table>
+
+<h2>VERDICTS</h2>
+<table><tbody>
+<tr><td><span class="v vb">BUY UP / BUY DOWN</span></td><td>That side passed every rule and gate. Execution fills it on paper at the ask, once per window and side. The grid shows the stake.</td></tr>
+<tr><td><span class="v vn">NO TRADE</span></td><td>A rule or gate failed. The reason names the first failure, with the value and the threshold (for example <code>DOWN: edge +0.8% &lt; min 4.0%</code>), and "(+N more)" when other rules failed too.</td></tr>
+<tr><td><span class="v vh">HOLD</span></td><td>Already holding a paper position in this window.</td></tr>
+<tr><td><span class="v mut">WAIT</span></td><td>No quote or no model yet: the book is not published, the strike is not stamped, or there's no next window yet.</td></tr>
+<tr><td><span class="v mut">OFF</span></td><td>The asset or horizon is disabled by an operator control.</td></tr>
+</tbody></table>
+
+<h2>OPERATOR CONTROLS (TERMINAL → CONTROLS PANEL)</h2>
+<p>Controls are <b>paper only</b>. Every change is validated against hard bounds and written as a new version of <code>data/runtime/controls.json</code>. The engine and execution workers apply it within about a second and report the version they applied; the panel shows ✓ when both have it. Every change is logged in Events with its old → new values and an optional note. Writes need the dashboard token in the <code>X-Dashboard-Token</code> header, so a URL alone cannot change anything. Unknown keys, including anything about mode, keys or live trading, are rejected.</p>
+<table id="ctl"><thead><tr><th>Control</th><th>Bounds</th><th>Config default</th><th>Effective now</th></tr></thead><tbody></tbody></table>
+<ul>
+<li><b>Flatten &amp; pause</b>: type <code>FLATTEN</code>. Every open paper position is closed at the current bid minus the taker fee and recorded as settled ("flattened at bid … by operator"), and new entries are paused. A position with no bid is left to settle at expiry.</li>
+<li><b>Reset to config defaults</b> puts every control back to the values in <code>config.yaml</code> / <code>strategies/default.yaml</code>.</li>
+<li><b>HALT reset is not a control.</b> It stays on the CLI (<code>scripts/reset_halt.sh --yes</code> on the droplet) and should only be run after the HALT's cause is understood.</li>
+</ul>
+
+<h2>LIVE VERDICTS BY MARKET</h2>
+<table id="live"><thead><tr><th>Market</th><th>Verdict</th><th>Reason</th><th>UP checks</th><th>DOWN checks</th></tr></thead><tbody></tbody></table>
+</main>
+<script>
+const T = new URLSearchParams(location.search).get("token")||""; const Q="token="+encodeURIComponent(T);
+document.getElementById("term").href = "/?"+Q;
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = x => x==null?"—":(x*100).toFixed(2).replace(/\.?0+$/,"")+"%";
+const RULES = [
+ ["Strike stamped","price_to_beat_known","The window's priceToBeat (strike) is known.",e=>"required","strike not stamped yet"],
+ ["Timing window","window_timing","At least N seconds into the window and more than M seconds before expiry.",e=>`≥ ${e.min_seconds_into_window??5}s in, > ${e.no_trade_final_seconds}s left`,"too early: Xs into window < Ns · too late: Xs left < Ms cutoff"],
+ ["Spread","max_spread","UP ask + DOWN ask − 1 is at most the cap.",(e,r)=>`≤ ${((r.max_spread??0.06)*100).toFixed(1)}¢`,"spread too wide: X¢ > Y¢ · spread unknown (no book)"],
+ ["Liquidity","min_liquidity","Enough size at the ask, in contracts and in dollars.",(e,r)=>`≥ ${r.min_liquidity_contracts??50} ct and $${r.min_liquidity_usd??25}`,"thin book: N ct ($X) < 50 ct ($25)"],
+ ["Ask band","ask_bounds","The ask sits inside the price band (avoids lottery tickets and near-certain prices).",(e,r)=>`${((r.min_ask??0.05)*100).toFixed(0)}¢–${((r.max_ask??0.9)*100).toFixed(0)}¢`,"ask X¢ outside 5¢–90¢"],
+ ["Edge after fees","min_edge_after_fees","Model probability − ask − taker fee per contract ≥ min edge.",e=>`≥ ${pct(e.min_edge_after_fees)}`,"edge +X% < min Y%"],
+];
+async function load(){
+  const r = await fetch("/api/state?part=snapshot&"+Q,{cache:"no-store"}); if(!r.ok) return; const s = await r.json();
+  const b = document.getElementById("sys"); b.textContent = (s.risk||{}).state || s.system; b.style.background = s.system==="HALTED"?"var(--red)":s.system==="STALE"?"var(--amber)":"var(--green)"; b.style.color="#000";
+  document.getElementById("clock").textContent = (s.as_of_et||"") + " · controls v" + ((s.controls||{}).version??0);
+  const e = (s.controls||{}).effective||{}; const raw = Object.fromEntries((s.rules||[]).map(x=>[x.name,x.threshold]));
+  document.querySelector("#rules tbody").innerHTML = RULES.map(([l,n,req,th,rs])=>`<tr><td><b>${l}</b><br><span class="mut">${n}</span></td><td>${req}</td><td class="pos">${esc(th(e,raw))}</td><td><code>${esc(rs)}</code></td></tr>`).join("");
+  const d = s.defaults||{};
+  document.querySelector("#ctl tbody").innerHTML = (s.control_fields||[]).map(f=>{ const fmt = v => f.kind==="subset"?(v||[]).join(", ").toUpperCase(): f.kind==="bool"?(v?"on":"off"): f.unit==="fraction"&&f.key!=="kelly_fraction"?pct(v):v;
+    const ch = JSON.stringify(e[f.key])!==JSON.stringify(d[f.key]);
+    return `<tr><td>${esc(f.label)}</td><td class="mut">${f.kind==="float"?(f.unit==="fraction"&&f.key!=="kelly_fraction"?pct(f.lo)+" – "+pct(f.hi):f.lo+" – "+f.hi):f.kind==="subset"?f.choices.join(", ").toUpperCase():"on / off"}</td><td>${esc(fmt(d[f.key]))}</td><td class="${ch?"neg":""}">${esc(fmt(e[f.key]))}${ch?" (changed)":""}</td></tr>`; }).join("");
+  const ckTxt = l => (l||[]).map(c=>`<span class="${c.passed?"pos":"neg"}">${c.passed?"✓":"✗"} ${esc(c.label)}: ${esc(c.value)}</span>`).join("<br>") || "—";
+  document.querySelector("#live tbody").innerHTML = (s.grid||[]).map(g=>`<tr><td><b>${esc((g.asset||"").toUpperCase())} ${esc(g.horizon)}</b><br><span class="mut">${esc(g.slug||"")}</span></td><td>${esc(g.verdict||"—")}</td><td>${esc(g.reason||"—")}</td><td>${ckTxt((g.checklist||{}).up)}</td><td>${ckTxt((g.checklist||{}).down)}</td></tr>`).join("");
+}
+load(); setInterval(load, 3000);
+</script>
+<script src="assets/common.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# Polymarket US paper-trading bot — default config.
+# This scaffold never places real orders. Do not put API keys in this file.
+#
+# Where things live:
+#   Strategies (the trading rules you will tweak):  strategies/
+#   Active strategy for this run:                   strategy.file below
+#   Paper trades, equity, logs:                     data/
+#   Archived earlier runs:                          data/archive/
+
+mode: paper          # paper only in this phase
+run_seconds: 0       # 0 = run until stop_at or SIGTERM
+stop_at: "23:00"     # America/New_York — stop opening the process at 11:00 PM ET
+log_level: INFO
+timezone: America/New_York
+
+api:
+  # Official public (no-auth) retail base URL.
+  # Docs: https://docs.polymarket.us/api-reference/introduction
+  public_base: https://gateway.polymarket.us
+  # Authenticated trading host — unused in paper mode.
+  trading_base: https://api.polymarket.us
+  timeout_seconds: 15
+  user_agent: polymarket-bot-paper/0.1
+  max_requests_per_second: 8   # stay well under the documented 25 req/s retail cap
+
+bankroll:
+  starting_cash_usd: 1000.00     # paper cash; starting day equity for daily +/- % rules
+
+# Trading rules live in the strategy file so they are easy to find and git-diff.
+# Edit strategies/default.yaml (or copy it to a new file and point this here).
+strategy:
+  name: default
+  file: strategies/default.yaml
+
+feeds:
+  # Official settlement index via the public Asset Prices API (no auth).
+  # Docs: https://docs.polymarket.us/api-reference/asset-prices/overview
+  price_poll_seconds: 1.0
+  book_poll_seconds: 2.0
+  price_lookback_seconds: 900    # history used for vol + settlement buffer
+  price_bucket: ASSET_PRICE_BUCKET_1S
+
+storage:
+  sqlite_path: data/paper_trades.sqlite
+  trades_csv: data/paper_trades.csv
+  evaluations_csv: data/evaluations.csv
+  equity_csv: data/equity.csv

@@ -1,0 +1,4 @@
+pyyaml>=6.0
+fastapi>=0.115
+uvicorn[standard]>=0.32
+cryptography>=42  # integrations key store (Fernet)

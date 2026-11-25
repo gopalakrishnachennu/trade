@@ -1,0 +1,36 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets — never commit
+.env
+*.env
+droplet.env
+deploy/do_ed25519
+deploy/do_ed25519*
+deploy/droplet.env
+deploy/known_hosts
+dashboard_token.txt
+**/dashboard_token.txt
+secrets/
+**/secrets/
+integrations.json
+*.key
+*.pem
+
+# Runtime data, archives, logs (live on the droplet / the Mac only)
+data/
+!data/README.md
+archive/
+*.tar.zst
+*.tar.gz
+*.log
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Local artefacts
+bin/
+screenshots*/

@@ -1,0 +1,79 @@
+# Default paper strategy: only take Up/Down quotes when the official-index
+# model beats the ask by a fee-adjusted edge, then size with fractional Kelly.
+#
+# This is the file to copy and edit when you want a new strategy. Point
+# config.yaml `strategy.file` at the new file, then git-commit the change.
+#
+# Daily risk (percent of starting day equity, default $1,000):
+#   +5% profit target  → stop opening new positions; let opens settle
+#   -10% loss limit    → same stop
+name: default
+description: >
+  Edge-after-fees taker on Polymarket US crypto Up/Down 5m/15m/1h windows,
+  using the official CF Benchmarks index via the public Asset Prices API.
+
+discovery:
+  assets: [btc, eth, sol, xrp]
+  horizons: [5m, 15m, 1h]
+  market_type: ASSET_PRICE_MARKET_TYPE_UP_DOWN
+  refresh_seconds: 15
+  category: crypto
+
+fees:
+  # Standard formula: fee = theta * contracts * p * (1-p), banker's rounded to cents.
+  # Conservative default: retail Tier 1 (app) coefficient 0.095.
+  # API taker promo through 2026-12-31: 0.0695 with a 70% rebate — not assumed here.
+  theta: 0.095
+  assume_taker: true
+
+volatility:
+  lookback_seconds: 900
+  annualized_floor:
+    btc: 0.40
+    eth: 0.50
+    sol: 0.70
+    xrp: 0.70
+  annualized_ceiling:
+    btc: 1.50
+    eth: 1.80
+    sol: 2.50
+    xrp: 2.50
+
+rules:
+  min_edge_after_fees: 0.04
+  max_spread: 0.06
+  min_liquidity_contracts: 50
+  min_liquidity_usd: 25
+  no_trade_final_seconds: 15
+  require_price_to_beat: true
+  min_seconds_into_window: 5
+  min_ask: 0.05
+  max_ask: 0.90
+
+sizing:
+  kelly_fraction: 0.25
+  max_fraction_of_bankroll: 0.05
+  max_contracts: 25
+
+risk:
+  max_per_bet_usd: 50
+  daily_profit_target_pct: 0.05    # initial target (+$50 on a $1,000 day); see profit_lock below
+  daily_loss_limit_pct: 0.10       # -$100 on a $1,000 day; no new entries once hit
+  max_concurrent_positions: 4
+  # Dynamic profit target. mode: profit_lock (default) or fixed (stop at the target).
+  # profit_lock: once realized P&L reaches the (possibly adaptive) target, keep
+  # trading at locked_size_mult x Kelly with a floor of lock_ratio x peak daily
+  # gain that ratchets up; stop for the day only at that floor or the loss limit.
+  profit_lock:
+    mode: profit_lock
+    lock_ratio: 0.70
+    locked_size_mult: 0.5
+    adaptive: true          # scale the target by the last N days' win rate / edge / P&L vol
+    target_min_pct: 0.03
+    target_max_pct: 0.10
+    lookback_days: 7
+    min_days: 3             # need this many prior days before adapting
+  max_open_exposure_usd: 200
+  one_position_per_market: true
+  # If this file exists, the bot stops opening new paper trades (existing ones still settle).
+  kill_switch_file: data/KILL

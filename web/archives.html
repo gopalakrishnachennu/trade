@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · ARCHIVES</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+</head><body>
+<main>
+<h1>ARCHIVES <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="state"></div>
+<div class="panel">
+<table id="tbl"><thead><tr><th>Part</th><th>Range (ET)</th><th>Created</th><th class="n">Size</th><th>sha256</th><th>Contents</th><th>Ack (Mac)</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+<div class="panel mut" style="font-size:11px">
+When live data passes the threshold, the supervisor rolls rows dated before today (ET) out of the live CSVs, rotated event files and logs into
+<code>data/archive/part-NNNN-&lt;start&gt;-&lt;end&gt;.tar.zst</code> with a manifest (sha256, row counts, time range). The sqlite ledger stays live and continuous; each part carries a consistent <code>VACUUM INTO</code> snapshot of it.
+The Mac pulls parts over HTTPS (<code>scripts/local_sync/pull_archives.sh</code>), verifies sha256, stores them in <code>~/PolymarketData/</code> and POSTs an ack.
+Only acknowledged parts are pruned (old rejected orders and equity snapshots leave the live sqlite; the tarball is deleted a few days later). <b>Unacknowledged data is never deleted.</b>
+</div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+async function load() {
+  const d = await PM.get("/api/archives");
+  const st = d.state || {};
+  const pct = d.trigger_bytes != null ? Math.min(100, 100 * d.trigger_bytes / d.threshold_bytes) : 0;
+  document.getElementById("sum").textContent = `· ${d.archives.length} part(s) · ${d.archives.filter(a => !a.acked_at).length} unacknowledged`;
+  document.getElementById("state").innerHTML = `
+    <div class="kv">
+      <span>Toward next part</span><span><b>${PM.bytes(d.trigger_bytes)}</b> of ${PM.bytes(d.threshold_bytes)} (${pct.toFixed(1)}%)
+        <span style="display:inline-block;width:200px;height:7px;border:1px solid var(--line);vertical-align:middle"><span style="display:block;height:100%;width:${pct}%;background:var(--amber)"></span></span></span>
+      <span>Live data total</span><span>${PM.bytes(d.live_bytes)} <span class="mut">(includes the sqlite ledger, which is never moved)</span></span>
+      <span>Last check</span><span>${PM.ago(st.last_check)}</span>
+      <span>Last part</span><span>${PM.esc(st.last_part || "—")} ${st.last_run ? "· " + PM.et(st.last_run) : ""}</span>
+      <span>Last ack</span><span>${PM.esc(st.last_ack_part || "—")} ${st.last_ack ? "· " + PM.et(st.last_ack) : ""}</span>
+      <span>Last error</span><span class="${st.last_error ? "neg" : "mut"}">${PM.esc(st.last_error || "none")}</span>
+      <span>Acked parts kept</span><span>${d.ack_keep_days} days after ack, then the tarball is deleted (manifest kept in archive/acked/)</span>
+    </div>
+    <div style="margin-top:8px"><button id="run">Archive now</button> <span class="mut">(forces a part even below the threshold; nothing is deleted)</span> <span id="runmsg" class="msg"></span></div>`;
+  document.getElementById("run").onclick = async () => {
+    if (!confirm("Create an archive part now? Old CSV rows move into the archive; nothing is deleted.")) return;
+    const m = document.getElementById("runmsg"); m.textContent = "archiving…";
+    try { const r = await PM.send("POST", "/api/archives/run", {}); m.textContent = "created " + r.manifest.archive; load(); } catch (e) { m.textContent = "error: " + e.message; }
+  };
+  document.querySelector("#tbl tbody").innerHTML = d.archives.length ? d.archives.slice().reverse().map(a => `<tr>
+    <td><b>${PM.esc(a.name)}</b></td><td>${PM.esc(a.range ? a.range.start + " → " + a.range.end : "—")}</td><td class="mut">${PM.esc(a.created || "")}</td>
+    <td class="n">${PM.bytes(a.bytes)}</td><td class="mut" title="${PM.esc(a.sha256)}">${PM.esc((a.sha256 || "").slice(0, 16))}…</td>
+    <td class="mut">${a.files.map(f => `${PM.esc(f.path)} <span class="cy">${f.rows ?? ""}</span>`).join("<br>")}</td>
+    <td>${a.acked_at ? `<span class="st st-OK">ACKED</span> <span class="mut">${PM.et(a.acked_at)}</span>${a.pruned_at ? '<div class="mut">pruned from live sqlite</div>' : ""}` : '<span class="st st-DEGRADED">PENDING</span>'}</td>
+    <td><a href="/api/archives/${encodeURIComponent(a.name)}?${PM.Q}">download</a><br><a href="/api/archives/${encodeURIComponent(a.manifest || "")}?${PM.Q}">manifest</a></td></tr>`).join("")
+    : `<tr><td colspan="8" class="mut">No parts yet — the first one is created when live data passes ${PM.bytes(d.threshold_bytes)}.</td></tr>`;
+}
+load(); setInterval(load, 15000);
+</script>
+</body></html>

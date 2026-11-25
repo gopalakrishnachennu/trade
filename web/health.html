@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · HEALTH</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+</head><body>
+<main>
+<h1>SYSTEM HEALTH <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="halt"></div>
+<div class="panel">
+<table id="tbl"><thead><tr><th>Component</th><th>Class</th><th>Status</th><th>Value</th><th>Last heartbeat</th><th>Threshold</th><th>Rule</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="panel mut" style="font-size:11px">
+<b class="amb">CRITICAL</b> components latch HALT when FAILED (two consecutive checks for system probes; trading heartbeats via the watchdog). HALT stops new entries and parks the trading processes; settlement of open paper positions continues on restart. HALT is cleared only on the droplet with <code>scripts/reset_halt.sh --yes</code> after the cause is understood — never from this page.<br>
+<b>NON-CRITICAL</b> components (LLM reviewer, archive job, sync acks, TLS, dashboard, strategy lab, alerts) are shown DEGRADED/FAILED and alerted, but never halt trading.<br>
+Machine-readable: <a id="hz" href="#">/healthz</a> (public, status word only) · <a id="mx" href="#">/metrics</a> (Prometheus, token required).
+</div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+document.getElementById("hz").href = "/healthz";
+document.getElementById("mx").href = "/metrics?" + PM.Q;
+const ORDER = ["trading", "system"];
+function render(d) {
+  const crit = d.items.filter(i => i.critical), non = d.items.filter(i => !i.critical);
+  const n = (s) => d.items.filter(i => i.status === s).length;
+  document.getElementById("sum").textContent = `· overall ${d.status} · ${n("OK")} OK · ${n("DEGRADED")} degraded · ${n("FAILED")} failed · updated ${PM.et(d.ts_unix)}`;
+  const h = d.halt || {};
+  document.getElementById("halt").innerHTML = h.halted
+    ? `<span class="st st-HALTED">HALT LATCHED</span> <b>${PM.esc(h.reason)}</b> from <b>${PM.esc(h.component)}</b> at ${PM.esc(h.ts_et || h.ts || "")}<br><span class="mut">${PM.esc(h.details || "")}</span>`
+    : `<span class="st st-OK">NO HALT</span> <span class="mut">latch clear — trading processes allowed to run</span>`;
+  const row = (i) => `<tr><td><b>${PM.esc(i.name)}</b><div class="mut">${PM.esc(i.group || "")}</div></td>
+    <td>${i.critical ? '<span class="crit">CRITICAL</span>' : '<span class="noncrit">non-critical</span>'}</td>
+    <td><span class="st st-${i.status}">${i.status}</span></td>
+    <td>${PM.esc(i.value)}${i.detail ? `<div class="mut">${PM.esc(i.detail)}</div>` : ""}</td>
+    <td class="mut">${i.last_heartbeat ? PM.ago(i.last_heartbeat) : (i.checked_at ? "checked " + PM.ago(i.checked_at) : "—")}</td>
+    <td>${PM.esc(i.threshold)}</td><td class="mut" style="max-width:420px">${PM.esc(i.rule)}</td></tr>`;
+  document.querySelector("#tbl tbody").innerHTML =
+    `<tr><td colspan="7" class="amb">CRITICAL — failure latches HALT</td></tr>` + crit.map(row).join("") +
+    `<tr><td colspan="7" class="amb">NON-CRITICAL — degraded + alert, never halts</td></tr>` + non.map(row).join("");
+}
+document.addEventListener("pm-health", (e) => render(e.detail));
+if (PM.lastHealth) render(PM.lastHealth);
+</script>
+</body></html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · INTEGRATIONS</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+</head><body>
+<main>
+<h1>INTEGRATIONS <span class="mut" style="font-weight:400;letter-spacing:0">LLM providers for the strategy reviewer</span></h1>
+<div class="panel" id="rev"></div>
+<div class="cards" id="cards"></div>
+<div class="panel mut" style="font-size:11px;margin-top:10px">
+Keys are sent once over HTTPS with the dashboard token in a header, stored only on the droplet in <code>data/secrets/integrations.enc</code> (mode 0600) and <span id="enc"></span>
+They are never sent back to the browser (only the last 4 characters), never logged and never committed. <b>Test</b> makes a minimal authenticated call that bills no tokens (list models / key status).
+The reviewer only receives strategy metrics and recent paper trades — no keys, tokens or account data. Paper only: no provider can place orders.
+</div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+let D = null;
+async function load() {
+  D = await PM.get("/api/integrations");
+  document.getElementById("enc").textContent = D.encrypted_at_rest
+    ? "encrypted at rest with Fernet (AES + HMAC) using a server-side key in data/secrets/master.key (0600). This protects a copied key file; root on the droplet can still decrypt."
+    : "NOT encrypted (python 'cryptography' missing) — file permissions only.";
+  const conn = Object.values(D.providers).filter(p => p.connected);
+  const r = D.reviewer || {};
+  document.getElementById("rev").innerHTML = `<b>Reviewer model</b> &nbsp;
+    <select id="rp"><option value="">none — deterministic gate only</option>${conn.map(p => `<option value="${p.id}" ${r.provider === p.id ? "selected" : ""}>${PM.esc(p.label)}</option>`).join("")}</select>
+    <input id="rm" size="30" placeholder="model" value="${PM.esc(r.model || "")}"> <button class="pri" id="rs">Save</button> <span id="rmsg" class="msg"></span>
+    <div class="mut" style="margin-top:4px">Current: ${r.provider ? `<b class="cy">${PM.esc(r.provider)}</b> / ${PM.esc(r.model)}` : "no LLM — reviews rank strategies deterministically; the promotion gate works the same."}</div>`;
+  document.getElementById("rp").onchange = (e) => { const p = D.providers[e.target.value]; document.getElementById("rm").value = p ? p.model : ""; };
+  document.getElementById("rs").onclick = async () => {
+    const m = document.getElementById("rmsg");
+    try { await PM.send("POST", "/api/integrations/reviewer", { provider: document.getElementById("rp").value || null, model: document.getElementById("rm").value }); m.textContent = "saved"; load(); } catch (e) { m.textContent = "error: " + e.message; }
+  };
+  document.getElementById("cards").innerHTML = Object.values(D.providers).map(card).join("");
+  for (const p of Object.values(D.providers)) wire(p);
+}
+function card(p) {
+  const t = p.last_test;
+  return `<div class="card" id="c-${p.id}"><h3>${PM.esc(p.label)} ${p.connected ? '<span class="pill on">CONNECTED</span>' : p.connectable ? '<span class="pill">not connected</span>' : '<span class="pill">no usable API</span>'}</h3>
+   <div class="mut" style="font-size:11px;margin-bottom:6px">${PM.esc(p.notes)}</div>
+   ${p.connectable ? `<div class="kv">
+     <span>Key</span><span>${p.connected ? `<b>${PM.esc(p.masked)}</b> <span class="mut">since ${PM.et(p.connected_at)}</span>` : "—"}</span>
+     <span>Base URL</span><span class="mut">${PM.esc(p.base_url || "—")}</span>
+     <span>Model</span><span>${PM.esc(p.model || "—")}</span>
+     <span>Last test</span><span class="${t ? (t.ok ? "pos" : "neg") : "mut"}">${t ? `${t.ok ? "OK" : "FAILED"} · ${PM.esc(t.detail)} · ${t.latency_ms} ms · ${PM.ago(t.ts)}` : "never"}</span>
+   </div>
+   <div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:5px">
+     <input type="password" id="k-${p.id}" placeholder="${p.connected ? "replace key" : "paste API key"}" autocomplete="off" style="flex:1;min-width:150px">
+     ${p.id === "custom" ? `<input id="b-${p.id}" placeholder="https://host/v1" value="${PM.esc(p.base_url || "")}" style="flex:1;min-width:150px">` : ""}
+     <input id="m-${p.id}" placeholder="model" value="${PM.esc(p.model || "")}" size="18">
+   </div>
+   <div style="margin-top:6px;display:flex;gap:6px"><button class="pri" id="s-${p.id}">Connect</button><button id="t-${p.id}" ${p.connected ? "" : "disabled"}>Test</button><button class="danger" id="d-${p.id}" ${p.connected ? "" : "disabled"}>Disconnect</button></div>`
+   : `<div class="mut">Cannot be connected.</div>`}
+   <div class="msg" id="msg-${p.id}"></div></div>`;
+}
+function wire(p) {
+  if (!p.connectable) return;
+  const msg = (t) => (document.getElementById("msg-" + p.id).textContent = t);
+  document.getElementById("s-" + p.id).onclick = async () => {
+    const key = document.getElementById("k-" + p.id).value.trim();
+    if (!key) return msg("paste a key first");
+    const b = document.getElementById("b-" + p.id);
+    try { await PM.send("POST", "/api/integrations/" + p.id, { key, model: document.getElementById("m-" + p.id).value, base_url: b ? b.value : undefined });
+      document.getElementById("k-" + p.id).value = ""; msg("saved; testing…"); await PM.send("POST", `/api/integrations/${p.id}/test`, {}); load(); } catch (e) { msg("error: " + e.message); }
+  };
+  document.getElementById("t-" + p.id).onclick = async () => { msg("testing…"); try { const r = await PM.send("POST", `/api/integrations/${p.id}/test`, {}); msg(r.result.ok ? "OK: " + r.result.detail : "FAILED: " + r.result.detail); load(); } catch (e) { msg("error: " + e.message); } };
+  document.getElementById("d-" + p.id).onclick = async () => { if (!confirm(`Delete the stored ${p.label} key?`)) return; try { await PM.send("DELETE", "/api/integrations/" + p.id); load(); } catch (e) { msg("error: " + e.message); } };
+}
+load();
+</script>
+</body></html>

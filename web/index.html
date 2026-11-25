@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PM US · PAPER TERMINAL</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="vendor/uPlot.min.css" id="uplotcss" />
+<style>
+:root{--bg:#0b0d10;--row:#11141a;--row2:#161a22;--line:#2a3140;--text:#d6deea;--muted:#8b95a8;--amber:#f5c14a;--green:#3dd68c;--red:#ff5d5d;--cyan:#4ec4ff;--violet:#b48cff;--mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:12px/1.35 var(--mono)}
+a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}
+header.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:6px 10px;border-bottom:1px solid var(--line);background:#090b0e;position:sticky;top:0;z-index:20}
+.brand{font-weight:700;letter-spacing:.08em;color:var(--amber)}
+.tag{border:1px solid var(--amber);color:var(--amber);padding:0 5px;font-size:10px;letter-spacing:.1em}
+.badge{font-weight:800;letter-spacing:.1em;padding:2px 8px;border-radius:2px;white-space:nowrap}
+.b-TRADING{background:var(--green);color:#04140c}.b-HALTED,.b-LOSS{background:var(--red);color:#1a0000}
+.b-STALE,.b-PAUSED,.b-BLOCKED,.b-LOCK{background:var(--amber);color:#1a1400}.b-PROFIT{background:var(--violet);color:#14002a}.b-TARGET{background:var(--cyan);color:#001826}
+.riskreason{color:var(--muted);flex:1;min-width:200px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clocks{color:var(--muted)}.clocks b{color:var(--text);font-weight:600}.clocks.bad b{color:var(--red)}
+nav{display:flex;gap:12px}
+.health{display:flex;flex-wrap:wrap;gap:6px;padding:5px 10px;border-bottom:1px solid var(--line)}
+.chip{border:1px solid var(--line);padding:1px 6px;font-size:10px;color:var(--muted)}
+.chip.ok{border-color:#1f5f3c;color:var(--green)}.chip.bad{border-color:var(--red);color:var(--red);background:#2a1010}
+main{padding:8px 10px 30px}
+h2{font-size:11px;letter-spacing:.1em;color:var(--amber);margin:0 0 6px;font-weight:700;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h2 .sub{color:var(--muted);font-weight:400;letter-spacing:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:10px}
+.kpi{background:var(--row);padding:5px 7px;min-height:44px}
+.kpi .l{color:var(--muted);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase}
+.kpi .v{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
+.kpi .s{color:var(--muted);font-size:10px}
+.pos{color:var(--green)}.neg{color:var(--red)}.mut{color:var(--muted)}.amb{color:var(--amber)}.cy{color:var(--cyan)}
+.row{display:grid;gap:10px;margin-bottom:10px}
+.r2{grid-template-columns:1fr 1fr}.r32{grid-template-columns:2fr 1fr}.r4{grid-template-columns:repeat(4,1fr)}
+.panel{background:var(--row);border:1px solid var(--line);padding:7px;min-width:0}
+.pick{display:inline-flex;border:1px solid var(--line)}
+.pick button{background:none;border:0;border-right:1px solid var(--line);color:var(--muted);font:inherit;font-size:11px;padding:2px 8px;cursor:pointer}
+.pick button:last-child{border-right:0}.pick button.on{background:var(--amber);color:#1a1400;font-weight:700}
+.chartinfo{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11px;color:var(--muted);margin-bottom:4px}
+.chartinfo b{color:var(--text);font-weight:600}
+.chart{width:100%;position:relative}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.03em;padding:3px 5px;border-bottom:1px solid var(--line);white-space:nowrap;position:sticky;top:0;background:var(--row)}
+td{padding:3px 5px;border-bottom:1px solid #1a1f28;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.wrap{white-space:normal}
+th.n,td.n{text-align:right}
+tbody tr:nth-child(even) td{background:#0f1217}
+.grid tbody tr.mrow{cursor:pointer}.grid tbody tr.mrow:hover td{background:#1a2030}
+.grid tbody tr.sel td{box-shadow:inset 0 1px 0 var(--amber),inset 0 -1px 0 var(--amber)}
+.verdict{font-weight:700;padding:0 4px}
+.v-BUY{color:#04140c;background:var(--green)}.v-NO{color:var(--amber)}.v-HOLD{color:var(--cyan)}.v-WAIT,.v-OFF{color:var(--muted)}
+.detail td{background:#0c0f14!important;white-space:normal}
+.ck{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.ck table td,.ck table th{font-size:11px}
+.scroll{max-height:330px;overflow:auto}
+.uplot{font-family:var(--mono)!important}
+.u-legend{font-size:10.5px!important;color:var(--text)}
+.u-legend .u-series th{color:var(--muted);font-weight:400}
+.u-legend .u-marker{width:10px!important;height:3px!important}
+.u-select{background:rgba(78,196,255,.08)!important}
+.bars td{padding:2px 5px}
+.pbar{position:relative;height:12px;background:#0b0d10;border:1px solid #1f2632;min-width:140px}
+.pbar i{position:absolute;top:0;bottom:0}.pbar .z{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--muted);left:50%}
+.form label{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 0;border-bottom:1px dashed #1f2632}
+.form label span{color:var(--muted)}
+.form input[type=number],.form input[type=text]{width:96px;background:#0b0d10;border:1px solid var(--line);color:var(--text);font:inherit;padding:2px 4px;text-align:right}
+.form .chk{display:flex;gap:8px;flex-wrap:wrap}
+.btn{background:#1a2030;border:1px solid var(--line);color:var(--text);font:inherit;padding:3px 10px;cursor:pointer}
+.btn:hover{border-color:var(--amber)}.btn.pri{background:var(--amber);color:#1a1400;font-weight:700;border-color:var(--amber)}
+.btn.danger{border-color:var(--red);color:var(--red)}.btn:disabled{opacity:.4;cursor:default}
+.msg{font-size:11px;margin-top:6px;min-height:14px}
+.evfilter{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:5px}
+.evfilter button{background:none;border:1px solid var(--line);color:var(--muted);font:inherit;font-size:10px;padding:1px 6px;cursor:pointer}
+.evfilter button.on{color:#1a1400;background:var(--amber);border-color:var(--amber)}
+.evfilter input{background:#0b0d10;border:1px solid var(--line);color:var(--text);font:inherit;font-size:10px;padding:1px 5px;width:150px}
+.k-fill,.k-settle{color:var(--green)}.k-halt,.k-reject{color:var(--red)}.k-blocked{color:var(--amber)}.k-control,.k-flatten{color:var(--cyan)}.k-decision{color:var(--text)}
+.note{color:var(--muted);font-size:10.5px}
+footer{color:var(--muted);font-size:10px;padding:8px 10px}
+@media(max-width:1200px){.r4{grid-template-columns:1fr 1fr}.r32{grid-template-columns:1fr}}
+@media(max-width:800px){.r2,.r4{grid-template-columns:1fr}}
+</style>
+<style>#pm-nav{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:4px 10px;border-bottom:1px solid #2a3140;background:#07090c;font:11px "IBM Plex Mono",ui-monospace,Menlo,monospace}#pm-nav .brand{font-weight:700;letter-spacing:.08em;color:#f5c14a}#pm-nav a{color:#8b95a8}#pm-nav a.cur{color:#d6deea;border-bottom:1px solid #f5c14a}#pm-nav .hp{margin-left:auto;display:flex;gap:6px;align-items:center}#pm-nav .st{font-weight:800;padding:1px 6px;border-radius:2px;font-size:10.5px;letter-spacing:.06em;cursor:pointer}#pm-nav .st-OK{background:#123d27;color:#3dd68c}#pm-nav .st-DEGRADED{background:#3d3112;color:#f5c14a}#pm-nav .st-FAILED,#pm-nav .st-HALTED{background:#4a1414;color:#ff5d5d}#pm-nav .mut{color:#8b95a8}</style>
+</head>
+<body>
+<header class="bar">
+  <span class="brand">PM US · PAPER TERMINAL</span><span class="tag">PAPER ONLY</span>
+  <span class="badge" id="sysBadge">…</span>
+  <span class="badge" id="riskBadge">…</span>
+  <span class="riskreason" id="riskReason">connecting…</span>
+  <span class="clocks" id="clocks"></span>
+  <nav><a id="rulesLink" href="#">RULES ↗</a></nav>
+</header>
+<div class="health" id="health"></div>
+<main>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="row r2">
+    <div class="panel">
+      <h2>INDEX <span class="pick" id="pickAsset"></span><span class="pick" id="pickTf"></span><span class="sub" id="idxTitle"></span></h2>
+      <div class="chartinfo" id="idxInfo"></div>
+      <div class="chart" id="idxChart"></div>
+    </div>
+    <div class="panel">
+      <h2>MARKET <span class="sub" id="mktTitle"></span></h2>
+      <div class="chartinfo" id="mktInfo"></div>
+      <div class="chart" id="mktChart"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:10px">
+    <h2>MARKET GRID · VERDICTS <span class="sub">click a row for the full rule checklist and stake; it also selects the charts</span></h2>
+    <div style="overflow-x:auto"><table class="grid" id="grid"><thead></thead><tbody></tbody></table></div>
+  </div>
+
+  <div class="row r32">
+    <div class="panel">
+      <h2>EQUITY · TODAY (ET) <span class="sub" id="eqInfo"></span></h2>
+      <div class="chart" id="eqChart"></div>
+      <div class="chart" id="ddChart"></div>
+    </div>
+    <div class="panel">
+      <h2>CONTROLS <span class="sub">paper only · token-protected · logged</span></h2>
+      <div class="form" id="ctlForm"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn pri" id="ctlApply">Apply…</button>
+        <button class="btn" id="ctlDefaults">Reset to config defaults…</button>
+      </div>
+      <div class="msg" id="ctlMsg"></div>
+      <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:6px">
+        <div class="note">FLATTEN / STOP closes every open paper position at the current bid (minus fee) and pauses new entries.</div>
+        <div style="display:flex;gap:6px;margin-top:4px"><input type="text" id="flatConfirm" placeholder="type FLATTEN" style="width:120px;background:#0b0d10;border:1px solid var(--line);color:var(--text);font:inherit;padding:2px 4px"><button class="btn danger" id="flatBtn">Flatten &amp; pause</button></div>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:6px" class="note" id="haltBox"></div>
+    </div>
+  </div>
+
+  <div class="row r4">
+    <div class="panel"><h2>P&amp;L BY ASSET / HORIZON</h2><div id="buckets"></div></div>
+    <div class="panel"><h2>CUMULATIVE P&amp;L BY BET</h2><div class="chart" id="cumChart"></div></div>
+    <div class="panel"><h2>P&amp;L BY HOUR (ET)</h2><div class="chart" id="hourChart"></div></div>
+    <div class="panel"><h2>EDGE DISTRIBUTION · TODAY <span class="sub" id="edgeInfo"></span></h2><div class="chart" id="edgeChart"></div></div>
+  </div>
+
+  <div class="panel" style="margin-bottom:10px">
+    <h2>BLOTTER · TODAY'S FILLS <span class="sub" id="blotInfo"></span></h2>
+    <div class="scroll"><table id="blotter"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
+  </div>
+
+  <div class="row r2">
+    <div class="panel"><h2>OPEN POSITIONS <span class="sub" id="openInfo"></span></h2><div class="scroll"><table id="opens"><thead></thead><tbody></tbody></table></div></div>
+    <div class="panel"><h2>EVENTS · DECISIONS <span class="sub" id="evInfo"></span></h2>
+      <div class="evfilter" id="evFilter"></div>
+      <div class="scroll"><table id="events"><thead><tr><th>Time ET</th><th>Kind</th><th>Src</th><th>Message</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</main>
+<footer>Paper simulation only. No orders are sent to Polymarket. Times are America/New_York (ET). Charts: uPlot 1.6.32 (vendored).</footer>
+
+<script src="vendor/uPlot.iife.min.js"></script>
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const Q = "token=" + encodeURIComponent(TOKEN);
+const TZ = "America/New_York";
+const ASSETS = ["btc","eth","sol","xrp"], TFS = ["5m","15m","1h"];
+const TF_SEC = {"5m":300,"15m":900,"1h":3600};
+const C = {text:"#d6deea",muted:"#8b95a8",line:"#2a3140",grid:"#1b212c",amber:"#f5c14a",green:"#3dd68c",red:"#ff5d5d",cyan:"#4ec4ff",violet:"#b48cff"};
+document.getElementById("rulesLink").href = "rules?" + Q;
+
+const S = {
+  tick:null, ledger:null, edges:null, events:[], idx:{}, mkts:{}, defaults:{}, fields:[],
+  asset: localStorage.getItem("pm.asset") || "btc", tf: localStorage.getItem("pm.tf") || "15m",
+  expanded:new Set(JSON.parse(localStorage.getItem("pm.expanded")||"[]")), evKinds:new Set(), evSearch:"",
+  pendingVersion:null, ctlDirty:false,
+};
+
+// ---------- formatting
+const fmtT = new Intl.DateTimeFormat("en-US",{timeZone:TZ,hour:"numeric",minute:"2-digit",second:"2-digit"});
+const fmtHM = new Intl.DateTimeFormat("en-US",{timeZone:TZ,hour:"numeric",minute:"2-digit"});
+const tET = t => t==null ? "—" : fmtT.format(new Date(t*1000));
+const hmET = t => t==null ? "—" : fmtHM.format(new Date(t*1000));
+const num = x => (x==null || x==="" || !isFinite(+x)) ? null : +x;
+const usd = (x,d=2) => num(x)==null ? "—" : (x<0?"−$":"$") + Math.abs(x).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const susd = (x,d=2) => num(x)==null ? "—" : (x>0?"+":x<0?"−":"") + "$" + Math.abs(x).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct = (x,d=1) => num(x)==null ? "—" : (x*100).toFixed(d) + "%";
+const spct = (x,d=1) => num(x)==null ? "—" : (x>0?"+":x<0?"−":"") + Math.abs(x*100).toFixed(d) + "%";
+const cents = x => num(x)==null ? "—" : (x*100).toFixed(1) + "¢";
+const cls = x => num(x)==null ? "mut" : x>0 ? "pos" : x<0 ? "neg" : "";
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const px = (x,a) => { x = num(x); if (x==null) return "—"; const d = x>=1000?2:x>=10?3:x>=1?4:5; return "$" + x.toLocaleString("en-US",{minimumFractionDigits:Math.min(d,2),maximumFractionDigits:d}); };
+const dur = s => { s = num(s); if (s==null) return "—"; if (s<=0) return "ended"; const m=Math.floor(s/60), r=Math.floor(s%60); return m>=60 ? `${Math.floor(m/60)}h${String(m%60).padStart(2,"0")}m` : m ? `${m}m${String(r).padStart(2,"0")}s` : `${r}s`; };
+const tsOf = v => { if (v==null) return null; if (typeof v==="number") return v; const t = Date.parse(v); return isNaN(t)?null:t/1000; };
+
+// ---------- uPlot helpers
+const tzDate = ts => uPlot.tzDate(new Date(ts*1e3), TZ);
+function axis(o){ return Object.assign({stroke:C.muted, grid:{stroke:C.grid,width:1}, ticks:{stroke:C.line,width:1,size:4}, font:"10px "+getComputedStyle(document.body).fontFamily, labelFont:"10px "+getComputedStyle(document.body).fontFamily, labelSize:14, labelGap:0}, o); }
+const usdAxis = (u, vals) => vals.map(v => v==null?"":(Math.abs(v)>=1000? "$"+v.toLocaleString("en-US",{maximumFractionDigits:0}) : "$"+v.toFixed(Math.abs(v)<10?2:0)));
+function priceAxisVals(u, vals){ const span = Math.abs((u.scales.y.max||0)-(u.scales.y.min||0)); const d = span<0.01?5: span<0.1?4: span<1?3: span<20?2: span<500?1:0; return vals.map(v=>v==null?"":"$"+v.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d})); }
+const charts = {};
+function mount(id, opts, data, h){
+  const el = document.getElementById(id);
+  if (charts[id]) { charts[id].destroy(); }
+  opts.width = Math.max(200, el.clientWidth); opts.height = h;
+  const u = new uPlot(opts, data, el);
+  charts[id] = u;
+  return u;
+}
+const ro = new ResizeObserver(entries => { for (const e of entries) { const u = charts[e.target.id]; if (u) u.setSize({width:Math.max(200,e.target.clientWidth), height:u.height}); } });
+["idxChart","mktChart","eqChart","ddChart","cumChart","hourChart","edgeChart"].forEach(id => ro.observe(document.getElementById(id)));
+function hline(u, y, scale, color, label, dash=[5,4]){
+  const ctx = u.ctx, b = u.bbox; const yy = u.valToPos(y, scale, true);
+  if (!(yy>=b.top-1 && yy<=b.top+b.height+1)) return false;
+  ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=1*devicePixelRatio; ctx.setLineDash(dash.map(d=>d*devicePixelRatio));
+  ctx.beginPath(); ctx.moveTo(b.left,yy); ctx.lineTo(b.left+b.width,yy); ctx.stroke(); ctx.setLineDash([]);
+  if (label){ ctx.fillStyle=color; ctx.font=`${10*devicePixelRatio}px monospace`; ctx.textAlign="right"; ctx.fillText(label, b.left+b.width-4*devicePixelRatio, yy-3*devicePixelRatio); }
+  ctx.restore(); return true;
+}
+function vline(u, x, color, label, dash=[3,3]){
+  const ctx = u.ctx, b = u.bbox; const xx = u.valToPos(x, "x", true);
+  if (!(xx>=b.left-1 && xx<=b.left+b.width+1)) return;
+  ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=1*devicePixelRatio; ctx.setLineDash(dash.map(d=>d*devicePixelRatio));
+  ctx.beginPath(); ctx.moveTo(xx,b.top); ctx.lineTo(xx,b.top+b.height); ctx.stroke(); ctx.setLineDash([]);
+  if (label){ ctx.fillStyle=color; ctx.font=`${10*devicePixelRatio}px monospace`; ctx.textAlign = xx > b.left+b.width-60*devicePixelRatio ? "right":"left"; ctx.fillText(label, xx+(ctx.textAlign==="left"?3:-3)*devicePixelRatio, b.top+11*devicePixelRatio); }
+  ctx.restore();
+}
+
+// ---------- pickers
+function pickers(){
+  const pa = document.getElementById("pickAsset"), pt = document.getElementById("pickTf");
+  pa.innerHTML = ASSETS.map(a=>`<button data-a="${a}" class="${a===S.asset?"on":""}">${a.toUpperCase()}</button>`).join("");
+  pt.innerHTML = TFS.map(t=>`<button data-t="${t}" class="${t===S.tf?"on":""}">${t}</button>`).join("");
+  pa.onclick = e => { const a=e.target.dataset.a; if(a){ select(a, S.tf); } };
+  pt.onclick = e => { const t=e.target.dataset.t; if(t){ select(S.asset, t); } };
+}
+function select(a, t){ S.asset=a; S.tf=t; localStorage.setItem("pm.asset",a); localStorage.setItem("pm.tf",t); pickers(); idxBuilt=null; mktBuilt=null; renderIdx(); renderMkt(); renderGrid(); }
+
+function rowFor(a,t){ return ((S.tick||{}).grid||[]).find(r => r.asset===a && r.horizon===t); }
+
+// ---------- index chart
+let idxBuilt = null;
+function renderIdx(){
+  const r = rowFor(S.asset, S.tf) || {};
+  const pts = S.idx[S.asset] || [];
+  const start = tsOf(r.window_start), end = tsOf(r.window_end), now = (S.tick||{}).ts_unix || Date.now()/1000;
+  const span = TF_SEC[S.tf];
+  let x0 = start ? start - Math.min(span*0.25, 300) : now - span, x1 = end || now + 30;
+  if (x1 < now) x1 = now + 10;
+  const xs=[], ys=[];
+  for (const p of pts){ if (p[0] >= x0 - 2) { xs.push(p[0]); ys.push(p[1]); } }
+  const strikes = TFS.map(t => { const rr = rowFor(S.asset,t)||{}; return {t, k:num(rr.price_to_beat), s:tsOf(rr.window_start), e:tsOf(rr.window_end)}; });
+  const last = ys.length ? ys[ys.length-1] : num(r.index);
+  const k = num(r.price_to_beat);
+  const dist = (last!=null && k!=null) ? last-k : null;
+  document.getElementById("idxTitle").textContent = `${S.asset.toUpperCase()} index · ${S.tf} window ${start?hmET(start):"?"}–${end?hmET(end):"?"} ET`;
+  document.getElementById("idxInfo").innerHTML =
+    `<span>last <b>${px(last)}</b></span><span>strike <b class="amb">${px(k)}</b></span>`+
+    `<span>vs strike <b class="${cls(dist)}">${dist==null?"—":(dist>=0?"+":"−")+px(Math.abs(dist)).slice(1).replace(/^/,"$")}</b> ${dist==null||!k?"":"("+spct(dist/k,3)+")"}</span>`+
+    `<span>time left <b>${dur(r.seconds_remaining)}</b></span>`+
+    `<span>leaning <b class="${dist==null?"":dist>=0?"pos":"neg"}">${dist==null?"—":dist>=0?"UP":"DOWN"}</b></span>`+
+    `<span>pts <b>${xs.length}</b></span>`;
+  const key = S.asset+S.tf+(start||"");
+  const data = [xs, ys];
+  if (idxBuilt !== key || !charts.idxChart){
+    idxBuilt = key;
+    const strikeCol = {"5m":C.violet,"15m":C.amber,"1h":C.cyan};
+    mount("idxChart", {
+      tzDate, cursor:{drag:{x:true,y:false}}, legend:{live:true},
+      scales:{x:{time:true, range:(u,mn,mx)=>[S._x0, S._x1]}, y:{range:(u,mn,mx)=>{
+        const ks = S._strikes.filter(s=>s.k!=null && s.e && s.e>S._x0).map(s=>s.k);
+        let lo = Math.min(mn??Infinity, ...ks), hi = Math.max(mx??-Infinity, ...ks);
+        if (!isFinite(lo)||!isFinite(hi)) return [0,1];
+        const pad = Math.max((hi-lo)*0.12, Math.abs(hi)*0.00005); return [lo-pad, hi+pad]; }}},
+      axes:[axis({label:"Time (ET)"}), axis({label:"Price ($)", size:78, values:priceAxisVals})],
+      series:[{label:"Time ET", value:(u,v)=>v==null?"—":tET(v)},
+              {label:S.asset.toUpperCase()+" index", stroke:C.text, width:1.4, value:(u,v)=>px(v), points:{show:false}}],
+      hooks:{draw:[u=>{
+        for (const s of S._strikes){ if (s.k!=null && s.e && s.e > S._x0 - 1) hline(u, s.k, "y", strikeCol[s.t], `${s.t} strike ${px(s.k)}`, s.t===S.tf?[6,3]:[2,4]); }
+        if (S._start) vline(u, S._start, C.muted, "start "+hmET(S._start));
+        if (S._end) vline(u, S._end, C.red, "end "+hmET(S._end), [6,3]);
+        vline(u, S._now, C.cyan, "now", [1,0]);
+        if (S._last!=null){ const b=u.bbox, yy=u.valToPos(S._last,"y",true), ctx=u.ctx; if (yy>=b.top&&yy<=b.top+b.height){ ctx.save(); ctx.fillStyle=C.text; ctx.font=`${10*devicePixelRatio}px monospace`; ctx.textAlign="left"; ctx.fillText(px(S._last), b.left+4*devicePixelRatio, yy-3*devicePixelRatio); ctx.restore(); } }
+      }]},
+    }, data, 300);
+  }
+  S._x0=x0; S._x1=x1; S._strikes=strikes; S._start=start; S._end=end; S._now=now; S._last=last;
+  charts.idxChart.setData(data, true);
+}
+
+// ---------- market chart
+let mktBuilt = null;
+function renderMkt(){
+  const r = rowFor(S.asset, S.tf) || {};
+  const m = S.mkts[r.slug] || {pts:[]};
+  const start = tsOf(r.window_start), end = tsOf(r.window_end), now = (S.tick||{}).ts_unix || Date.now()/1000;
+  const minEdge = (((S.tick||{}).controls||{}).effective||{}).min_edge_after_fees ?? 0.04;
+  const xs=[],ua=[],da=[],pu=[],pd=[],eu=[],ed=[];
+  for (const p of m.pts||[]){ xs.push(p[0]); ua.push(p[1]); da.push(p[2]); pu.push(p[3]); pd.push(p[3]==null?null:1-p[3]); eu.push(p[4]==null?null:p[4]*100); ed.push(p[5]==null?null:p[5]*100); }
+  document.getElementById("mktTitle").textContent = r.slug ? `${r.slug} · UP/DOWN ask vs model` : "no live window";
+  document.getElementById("mktInfo").innerHTML =
+    `<span>UP ask <b class="pos">${cents(r.up_ask)}</b></span><span>DOWN ask <b class="neg">${cents(r.down_ask)}</b></span>`+
+    `<span>model P(UP) <b class="cy">${pct(r.model_prob_up)}</b></span>`+
+    `<span>edge UP <b class="${cls(r.edge_up)}">${spct(r.edge_up)}</b> · DOWN <b class="${cls(r.edge_down)}">${spct(r.edge_down)}</b></span>`+
+    `<span>min edge <b class="amb">${pct(minEdge)}</b></span><span>verdict <b>${esc(r.verdict||"—")}</b></span>`;
+  const data=[xs,ua,da,pu,pd,eu,ed];
+  const key = (r.slug||"none");
+  if (mktBuilt !== key || !charts.mktChart){
+    mktBuilt = key;
+    mount("mktChart", {
+      tzDate, legend:{live:true},
+      scales:{x:{time:true, range:()=>[S._mx0,S._mx1]}, y:{range:[0,1]}, e:{range:(u,mn,mx)=>{ const lo=Math.min(mn??0,-(S._minEdge*100)-2), hi=Math.max(mx??0,S._minEdge*100+2); return [Math.max(lo,-60), Math.min(hi,60)]; }}},
+      axes:[axis({label:"Time (ET)"}), axis({label:"Price / probability", size:52, values:(u,v)=>v.map(x=>x==null?"":(x*100).toFixed(0)+"¢")}),
+            axis({scale:"e", side:1, label:"Edge after fees (%)", size:50, grid:{show:false}, values:(u,v)=>v.map(x=>x==null?"":x.toFixed(0)+"%")})],
+      series:[{label:"Time ET", value:(u,v)=>v==null?"—":tET(v)},
+        {label:"UP ask", stroke:C.green, width:1.4, value:(u,v)=>cents(v)},
+        {label:"DOWN ask", stroke:C.red, width:1.4, value:(u,v)=>cents(v)},
+        {label:"Model P(UP)", stroke:C.cyan, width:1.6, value:(u,v)=>pct(v)},
+        {label:"Model P(DOWN)", stroke:C.cyan, width:1, dash:[4,3], value:(u,v)=>pct(v)},
+        {label:"Edge UP", scale:"e", stroke:"rgba(61,214,140,.45)", width:1, dash:[2,2], value:(u,v)=>v==null?"—":v.toFixed(1)+"%"},
+        {label:"Edge DOWN", scale:"e", stroke:"rgba(255,93,93,.45)", width:1, dash:[2,2], value:(u,v)=>v==null?"—":v.toFixed(1)+"%"}],
+      hooks:{draw:[u=>{
+        hline(u, S._minEdge*100, "e", C.amber, `min edge ${pct(S._minEdge)}`, [6,3]);
+        hline(u, 0, "e", C.line, "", [1,3]);
+        if (S._mstart) vline(u, S._mstart, C.muted, "start");
+        if (S._mend) vline(u, S._mend, C.red, "end", [6,3]);
+        vline(u, S._now, C.cyan, "now", [1,0]);
+      }]},
+    }, data, 300);
+  }
+  S._mx0 = start || now-600; S._mx1 = Math.max(end || now+30, now+5); S._mstart=start; S._mend=end; S._minEdge=minEdge;
+  charts.mktChart.setData(data, true);
+}
+
+// ---------- KPIs and header
+function kpi(l, v, c="", s=""){ return `<div class="kpi"><div class="l">${l}</div><div class="v ${c}">${v}</div>${s?`<div class="s">${s}</div>`:""}</div>`; }
+function renderHeader(){
+  const t = S.tick; if (!t) return;
+  const sb = document.getElementById("sysBadge"); sb.textContent = t.system; sb.className = "badge b-"+t.system;
+  const rk = t.risk||{}; const rb = document.getElementById("riskBadge"); rb.textContent = rk.state||"—"; rb.className = "badge b-"+String(rk.state||"").split(" ")[0];
+  document.getElementById("riskReason").textContent = rk.reason || ""; document.getElementById("riskReason").title = rk.reason || "";
+  const age = num(t.data_age_seconds);
+  const ck = document.getElementById("clocks"); ck.className = "clocks" + (age==null||age>5?" bad":"");
+  ck.innerHTML = `as of <b>${esc((t.as_of_et||"").replace(/^\d{4}-\d\d-\d\d /,""))}</b> · data age <b>${age==null?"—":age.toFixed(1)+"s"}</b> · ctl <b>v${(t.controls||{}).version??0}</b>`;
+  document.getElementById("health").innerHTML = (t.health||[]).map(h=>`<span class="chip ${h.stale?"bad":"ok"}" title="seq ${h.seq} · threshold ${h.threshold}s">${esc(h.component)} ${h.age_seconds==null?"—":h.age_seconds.toFixed(1)+"s"}${h.status?" · "+esc(h.status):""}</span>`).join("")
+    + (t.dashboard_error?`<span class="chip bad">dashboard: ${esc(t.dashboard_error)}</span>`:"");
+  const k = t.kpis||{}, mark = unrealized();
+  const pf = k.profit_factor==null ? (k.gross_winnings>0?"∞":"—") : (+k.profit_factor).toFixed(2);
+  document.getElementById("kpis").innerHTML = [
+    kpi("Start bankroll", usd(k.starting_bankroll)),
+    kpi("Equity", usd(k.equity), cls(k.net_pnl), mark.n?`mark ${usd(k.equity+mark.u)} (uPnL ${susd(mark.u)})`:"realized basis"),
+    kpi("Cash", usd(k.cash)),
+    kpi("Net P&L", susd(k.net_pnl), cls(k.net_pnl), spct(k.net_pnl_pct,2)+" of start"),
+    kpi("Staked today", usd(k.staked_today)),
+    kpi("Bets", k.bets??"—", "", `${k.settled??0} settled · ${k.open_count??0} open`),
+    kpi("Open exposure", usd(k.open_exposure)),
+    kpi("Gross wins", usd(k.gross_winnings), "pos"),
+    kpi("Gross losses", usd(k.gross_losses), "neg"),
+    kpi("Win rate", pct(k.win_rate), "", `${k.wins??0}W – ${k.losses??0}L`),
+    kpi("ROI on staked", spct(k.roi_on_staked), cls(k.roi_on_staked)),
+    kpi("Avg stake", usd(k.avg_stake)),
+    kpi("Avg win / loss", `<span class="pos">${usd(k.avg_win)}</span> / <span class="neg">${usd(k.avg_loss)}</span>`),
+    kpi("Profit factor", pf),
+    kpi("Fees paid", usd(k.fees_paid)),
+    kpi("Max drawdown", usd(k.max_drawdown_usd), "neg", spct(k.max_drawdown_pct,2)),
+    lockKpis(k),
+    kpi(`To −${pct(k.loss_limit_pct,1)} limit`, k.loss_limit_hit?"HIT":usd(k.to_loss_limit_usd), k.loss_limit_hit?"neg":"", `floor ${usd((k.starting_bankroll||0)-(k.loss_limit_usd||0))}`),
+    kpi("Risk state", esc(rk.state||"—"), rk.state==="TRADING"?"pos":rk.state==="HALTED"||rk.state==="LOSS LIMIT"?"neg":"amb", esc((rk.reason||"").slice(0,60))),
+  ].join("");
+}
+function lockKpis(k){
+  const L = k.lock; const start = k.starting_bankroll||0;
+  if (!L) return kpi(`To +${pct(k.target_pct,1)} target`, k.target_hit?"HIT":usd(k.to_target_usd), k.target_hit?"cy":"", `target ${usd(start+(k.target_usd||0))}`);
+  const modeTxt = L.mode==="fixed" ? "fixed stop" : "profit lock";
+  const ph = {TRADING:"TRADING",LOCKED:"LOCKED",STOPPED_FLOOR:"STOPPED (floor)",STOPPED_LOSS:"STOPPED (loss)",STOPPED_TARGET:"STOPPED (target)"}[L.phase]||L.phase;
+  return kpi(`Target +${pct(L.target_pct,2)}`, usd(L.target_equity), L.phase==="TRADING"?"":"cy", `${L.phase==="TRADING"?"to go "+usd(L.target_usd-L.pnl):"hit"} · ${esc(L.target_info.split(":")[0])}`)
+    + kpi("Peak gain", susd(L.peak_usd), cls(L.peak_usd), `peak equity ${usd(L.peak_equity)}`)
+    + kpi(`Locked floor (${pct(S.tick&&S.tick.controls&&S.tick.controls.effective?S.tick.controls.effective.lock_ratio:0.7,0)} of peak)`, L.floor_usd==null?"—":susd(L.floor_usd), L.floor_usd==null?"mut":"amb", L.floor_usd==null?"locks when target is hit":`floor equity ${usd(L.floor_equity)} · cushion ${usd(L.pnl-L.floor_usd)}`)
+    + kpi("Target mode", esc(ph), L.phase.startsWith("STOPPED")?"neg":L.phase==="LOCKED"?"amb":"pos", `${modeTxt} · size ${L.size_mult}x Kelly`);
+}
+function unrealized(){
+  const L = S.ledger; let u=0, n=0; if (!L) return {u,n};
+  for (const o of L.open_positions||[]){ const r = ((S.tick||{}).grid||[]).find(g=>g.slug===o.market); if (!r) continue; const bid = o.side==="up"?r.up_bid:r.down_bid; if (num(bid)==null) continue; u += o.contracts*bid - o.stake_usd; n++; }
+  return {u,n};
+}
+
+// ---------- grid
+const CK_ORDER = ["price_to_beat_known","window_timing","max_spread","min_liquidity","ask_bounds","min_edge_after_fees"];
+function vclass(v){ v=String(v||""); return v.startsWith("BUY")?"v-BUY":v==="NO TRADE"?"v-NO":v==="HOLD"?"v-HOLD":v==="OFF"?"v-OFF":"v-WAIT"; }
+function renderGrid(){
+  const t = S.tick; if (!t) return;
+  const th = document.querySelector("#grid thead"), tb = document.querySelector("#grid tbody");
+  th.innerHTML = `<tr><th>Asset</th><th>TF</th><th>Window ET</th><th class="n">Left</th><th class="n">Strike</th><th class="n">Index</th><th class="n">Δ vs strike</th><th class="n">UP ask</th><th class="n">DOWN ask</th><th class="n">P(UP)</th><th class="n">Edge UP</th><th class="n">Edge DN</th><th>Verdict</th><th>Reason</th><th class="n">Stake</th></tr>`;
+  let h = "";
+  for (const r of t.grid||[]){
+    const key = r.asset+"|"+r.horizon, sel = r.asset===S.asset && r.horizon===S.tf;
+    const ws = tsOf(r.window_start), we = tsOf(r.window_end);
+    const d = num(r.distance);
+    h += `<tr class="mrow${sel?" sel":""}" data-k="${key}"><td><b>${esc((r.asset||"").toUpperCase())}</b></td><td>${esc(r.horizon)}</td><td>${hmET(ws)}–${hmET(we)}</td><td class="n">${dur(r.seconds_remaining)}</td>`+
+      `<td class="n amb">${px(r.price_to_beat)}</td><td class="n">${px(r.index)}</td><td class="n ${cls(d)}">${d==null?"—":(d>=0?"+":"−")+Math.abs(d).toLocaleString("en-US",{maximumFractionDigits:d&&Math.abs(d)<1?5:2})}</td>`+
+      `<td class="n pos">${cents(r.up_ask)}</td><td class="n neg">${cents(r.down_ask)}</td><td class="n cy">${pct(r.model_prob_up)}</td>`+
+      `<td class="n ${cls(r.edge_up)}">${spct(r.edge_up)}</td><td class="n ${cls(r.edge_down)}">${spct(r.edge_down)}</td>`+
+      `<td><span class="verdict ${vclass(r.verdict)}">${esc(r.verdict||"—")}</span></td><td class="wrap" style="min-width:260px">${esc(r.reason||r.status||"—")}</td><td class="n">${r.stake_preview==null?"—":usd(r.stake_preview)}</td></tr>`;
+    if (S.expanded.has(key)) h += `<tr class="detail"><td colspan="15">${checklist(r)}</td></tr>`;
+  }
+  tb.innerHTML = h;
+}
+function checklist(r){
+  const ck = r.checklist; if (!ck) return `<span class="mut">No evaluation for this window yet (${esc(r.status||"no book or model")}).</span>`;
+  const by = side => Object.fromEntries((ck[side]||[]).map(c=>[c.name,c]));
+  const U = by("up"), D = by("down");
+  const names = CK_ORDER.filter(n=>U[n]||D[n]);
+  const cell = c => !c ? `<td class="mut">—</td>` : `<td class="${c.passed?"pos":"neg"}">${c.passed?"✓":"✗"} ${esc(c.value)}</td>`;
+  let rows = names.map(n=>{ const c = U[n]||D[n]; return `<tr><td>${esc(c.label)}</td>${cell(U[n])}${cell(D[n])}<td class="mut">${esc(c.threshold)}</td></tr>`; }).join("");
+  if (!rows) rows = `<tr><td colspan="4" class="mut">UP: ${esc(ck.up_reason||"—")} · DOWN: ${esc(ck.down_reason||"—")}</td></tr>`;
+  const gates = (ck.gates||[]).map(g=>`<tr><td>${esc(g.label)}</td><td class="${g.passed?"pos":"neg"}">${g.passed?"✓":"✗"} ${esc(g.value)}</td></tr>`).join("");
+  return `<div class="ck"><div><table><thead><tr><th>Rule</th><th>UP</th><th>DOWN</th><th>Threshold</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="note" style="margin-top:4px">UP: ${esc(ck.up_reason||"passes all rules")} · DOWN: ${esc(ck.down_reason||"passes all rules")}</div></div>
+    <div><table><thead><tr><th>Portfolio gate</th><th>State</th></tr></thead><tbody>${gates}</tbody></table>
+    <div style="margin-top:6px">Verdict <span class="verdict ${vclass(r.verdict)}">${esc(r.verdict||"—")}</span> · best side <b>${esc((r.verdict_side||"").toUpperCase())}</b> · would stake <b>${r.stake_preview==null?"—":usd(r.stake_preview)}</b> <span class="note">(Kelly ${(((S.tick||{}).controls||{}).effective||{}).kelly_fraction ?? "—"}, cap ${usd((((S.tick||{}).controls||{}).effective||{}).max_per_bet_usd)})</span></div></div></div>`;
+}
+document.querySelector("#grid tbody").addEventListener("click", e => {
+  const tr = e.target.closest("tr.mrow"); if (!tr) return;
+  const k = tr.dataset.k; const [a,t] = k.split("|");
+  if (S.expanded.has(k)) S.expanded.delete(k); else S.expanded.add(k);
+  localStorage.setItem("pm.expanded", JSON.stringify([...S.expanded]));
+  if (a!==S.asset || t!==S.tf) select(a,t); else renderGrid();
+});
+
+// ---------- equity + drawdown
+function renderEquity(){
+  const L = S.ledger; if (!L) return;
+  const k = L.kpis, start = k.starting_bankroll, now = (S.tick||{}).ts_unix || Date.now()/1000;
+  const cv = (L.curve||[]).slice();
+  if (cv.length && cv[cv.length-1].ts < now) cv.push({ts:now, equity:cv[cv.length-1].equity, kind:"now"});
+  const xs = cv.map(p=>p.ts), ys = cv.map(p=>p.equity);
+  const wins = cv.map(p=>p.kind==="win"?p.equity:null), losses = cv.map(p=>p.kind==="loss"?p.equity:null);
+  const LK = k.lock || null;
+  const target = LK ? LK.target_equity : start + k.target_usd, floor = start - k.loss_limit_usd;
+  const lockFloor = cv.map(p => { if (!LK || !LK.floor_history || !LK.floor_history.length) return null; let f=null; for (const [ts,v] of LK.floor_history) if (ts <= p.ts) f = start + v; return f; });
+  const peakEq = LK ? LK.peak_equity : null;
+  document.getElementById("eqInfo").textContent = `${usd(start)} → ${usd(k.equity)} (${susd(k.net_pnl)}, ${spct(k.net_pnl_pct,2)}) · ${k.settled} settled · target ${usd(target)} · floor ${usd(floor)}`;
+  const opts = {
+    tzDate, cursor:{sync:{key:"eq"}}, legend:{live:true},
+    scales:{x:{time:true}, y:{range:(u,mn,mx)=>{ let lo=Math.min(mn,start), hi=Math.max(mx,start, peakEq||start); if (Math.abs(target-hi) < (hi-lo)*0.6+20) hi=Math.max(hi,target); if (Math.abs(lo-floor) < (hi-lo)*0.6+20) lo=Math.min(lo,floor); const pad=Math.max((hi-lo)*0.1, 2); return [lo-pad, hi+pad]; }}},
+    axes:[axis({label:"Time (ET)"}), axis({label:"Equity ($)", size:70, values:usdAxis})],
+    series:[{label:"Time ET", value:(u,v)=>v==null?"—":tET(v)},
+      {label:"Equity", stroke:C.amber, width:2, fill:"rgba(245,193,74,.06)", paths:uPlot.paths.stepped({align:1}), value:(u,v)=>usd(v), points:{show:false}},
+      {label:"Win", stroke:C.green, fill:C.green, paths:()=>null, points:{show:true,size:7,fill:C.green,stroke:C.green}, value:(u,v)=>v==null?"—":usd(v)},
+      {label:"Loss", stroke:C.red, fill:C.red, paths:()=>null, points:{show:true,size:7,fill:C.red,stroke:C.red}, value:(u,v)=>v==null?"—":usd(v)},
+      {label:"Locked floor", stroke:C.violet, width:1.5, dash:[4,3], paths:uPlot.paths.stepped({align:1}), points:{show:false}, value:(u,v)=>v==null?"—":usd(v)}],
+    hooks:{draw:[u=>{
+      hline(u, start, "y", C.muted, `start ${usd(start,0)}`, [2,3]);
+      if (peakEq!=null && LK && LK.phase!=="TRADING") hline(u, peakEq, "y", C.green, `peak ${usd(peakEq)}`, [1,3]);
+      hline(u, target, "y", C.cyan, `${LK&&LK.mode!=="fixed"?"lock trigger":"target"} +${pct(k.target_pct,1)} ${usd(target,0)}`, [6,3]);
+      if (!hline(u, floor, "y", C.red, `−${pct(k.loss_limit_pct,1)} limit ${usd(floor,0)}`, [6,3])) { const b=u.bbox, ctx=u.ctx; ctx.save(); ctx.fillStyle=C.red; ctx.font=`${10*devicePixelRatio}px monospace`; ctx.textAlign="right"; ctx.fillText(`loss limit ${usd(floor,0)} ↓ (off scale)`, b.left+b.width-4*devicePixelRatio, b.top+b.height-4*devicePixelRatio); ctx.restore(); }
+    }]},
+  };
+  if (LK && LK.floor_equity!=null) document.getElementById("eqInfo").textContent += ` · ${LK.phase} · floor ${usd(LK.floor_equity)} · peak ${usd(LK.peak_equity)}`;
+  mount("eqChart", opts, [xs, ys, wins, losses, lockFloor], 250);
+  const dd = (L.drawdown||[]).slice(); if (dd.length && dd[dd.length-1].ts < now) dd.push({ts:now, dd_usd:dd[dd.length-1].dd_usd, dd_pct:dd[dd.length-1].dd_pct});
+  mount("ddChart", {
+    tzDate, cursor:{sync:{key:"eq"}}, legend:{live:true},
+    scales:{x:{time:true}, y:{range:(u,mn,mx)=>[Math.min(mn??0,-1)*1.15, 0.5]}},
+    axes:[axis({label:"Time (ET)"}), axis({label:"Drawdown ($)", size:70, values:usdAxis})],
+    series:[{label:"Time ET", value:(u,v)=>v==null?"—":tET(v)},
+      {label:"Drawdown from peak", stroke:C.red, width:1.5, fill:"rgba(255,93,93,.15)", paths:uPlot.paths.stepped({align:1}), value:(u,v)=>usd(v)}],
+  }, [dd.map(p=>p.ts), dd.map(p=>p.dd_usd)], 120);
+}
+
+// ---------- buckets, cumulative, hour, edges
+function renderBuckets(){
+  const L = S.ledger; if (!L) return;
+  const bs = (L.buckets||[]); const mx = Math.max(1, ...bs.map(b=>Math.abs(b.pnl||0)));
+  const scale = niceMax(mx);
+  let h = `<table class="bars"><thead><tr><th>Bucket</th><th class="n">n</th><th class="n">W–L</th><th class="n">Win%</th><th class="n">P&amp;L</th><th style="text-align:center">−${usd(scale,0)} · 0 · +${usd(scale,0)}</th></tr></thead><tbody>`;
+  for (const b of bs){
+    const w = Math.abs(b.pnl||0)/scale*50; const pos = (b.pnl||0)>=0;
+    h += `<tr class="${b.n?"":"mut"}"><td>${esc(b.label)}</td><td class="n">${b.n}</td><td class="n">${b.wins}–${b.losses}</td><td class="n">${b.settled?pct(b.win_rate,0):"—"}</td><td class="n ${cls(b.pnl)}">${b.n?susd(b.pnl):"—"}</td>`+
+      `<td><div class="pbar"><span class="z"></span><i style="${pos?`left:50%;width:${w}%`:`right:50%;width:${w}%`};background:${pos?C.green:C.red}"></i></div></td></tr>`;
+  }
+  const tot = bs.reduce((a,b)=>({n:a.n+b.n,w:a.w+b.wins,l:a.l+b.losses,p:a.p+(b.pnl||0)}),{n:0,w:0,l:0,p:0});
+  h += `</tbody><tfoot><tr><td><b>Total</b></td><td class="n">${tot.n}</td><td class="n">${tot.w}–${tot.l}</td><td class="n">${tot.w+tot.l?pct(tot.w/(tot.w+tot.l),0):"—"}</td><td class="n ${cls(tot.p)}"><b>${susd(tot.p)}</b></td><td></td></tr></tfoot></table>`;
+  document.getElementById("buckets").innerHTML = h;
+}
+function niceMax(v){ const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1,2,2.5,5,10]) if (m*p >= v) return m*p; return 10*p; }
+function barsPN(xs, ys){ return [ys.map(v=>v!=null&&v>=0?v:null), ys.map(v=>v!=null&&v<0?v:null)]; }
+function renderCum(){
+  const L = S.ledger; if (!L) return;
+  const cb = L.cumulative||[]; const xs = cb.map(c=>c.n), per = cb.map(c=>c.pnl), cum = cb.map(c=>c.cum);
+  const [p,n] = barsPN(xs, per);
+  const bars = uPlot.paths.bars({size:[0.6, 40]});
+  mount("cumChart", {
+    legend:{live:true}, scales:{x:{time:false, range:(u,mn,mx)=>[0.4, Math.max(1,(mx||1))+0.6]}, y:{range:(u,mn,mx)=>{ const lo=Math.min(0,mn??0), hi=Math.max(0,mx??0); const pad=Math.max((hi-lo)*0.1,1); return [lo-pad,hi+pad]; }}},
+    axes:[axis({label:"Bet # (settle order)", values:(u,v)=>v.map(x=>Number.isInteger(x)?x:"")}), axis({label:"P&L ($)", size:60, values:usdAxis})],
+    series:[{label:"Bet", value:(u,v,si,i)=>v==null?"—":`#${v} ${cb[i]?cb[i].label:""}`},
+      {label:"Win", fill:"rgba(61,214,140,.7)", stroke:C.green, paths:bars, points:{show:false}, value:(u,v)=>v==null?"—":susd(v)},
+      {label:"Loss", fill:"rgba(255,93,93,.7)", stroke:C.red, paths:bars, points:{show:false}, value:(u,v)=>v==null?"—":susd(v)},
+      {label:"Cumulative", stroke:C.amber, width:2, points:{show:true,size:4,fill:C.amber}, value:(u,v)=>susd(v)}],
+    hooks:{draw:[u=>hline(u,0,"y",C.muted,"",[1,2])]},
+  }, [xs,p,n,cum], 230);
+}
+function renderHour(){
+  const L = S.ledger; if (!L) return;
+  const bh = L.by_hour||[]; const nowH = +new Intl.DateTimeFormat("en-US",{timeZone:TZ,hour:"numeric",hour12:false}).format(new Date())%24;
+  const lo = bh.length ? Math.min(...bh.map(b=>b.hour), nowH) : nowH, hi = Math.max(nowH, ...bh.map(b=>b.hour));
+  const xs=[], ys=[], ns=[];
+  for (let h=lo; h<=hi; h++){ const b = bh.find(x=>x.hour===h); xs.push(h); ys.push(b?b.pnl:0); ns.push(b?b:{n:0,wins:0}); }
+  const [p,n] = barsPN(xs, ys); const bars = uPlot.paths.bars({size:[0.6, 60]});
+  const hl = h => { const a = h%12===0?12:h%12; return a + (h<12?" AM":" PM"); };
+  mount("hourChart", {
+    legend:{live:true}, scales:{x:{time:false, range:()=>[lo-0.6, hi+0.6]}, y:{range:(u,mn,mx)=>{ const l=Math.min(0,mn??0), h=Math.max(0,mx??0); const pad=Math.max((h-l)*0.1,1); return [l-pad,h+pad]; }}},
+    axes:[axis({label:"Hour of entry (ET)", values:(u,v)=>v.map(x=>Number.isInteger(x)?hl(x):""), incrs:[1,2,3,6]}), axis({label:"P&L ($)", size:60, values:usdAxis})],
+    series:[{label:"Hour", value:(u,v,si,i)=>v==null?"—":`${hl(v)} · ${ns[i]?ns[i].n:0} bets, ${ns[i]?ns[i].wins:0}W`},
+      {label:"Profit", fill:"rgba(61,214,140,.7)", stroke:C.green, paths:bars, points:{show:false}, value:(u,v)=>v==null?"—":susd(v)},
+      {label:"Loss", fill:"rgba(255,93,93,.7)", stroke:C.red, paths:bars, points:{show:false}, value:(u,v)=>v==null?"—":susd(v)}],
+    hooks:{draw:[u=>hline(u,0,"y",C.muted,"",[1,2])]},
+  }, [xs,p,n], 230);
+}
+function renderEdges(){
+  const E = S.edges; if (!E || !E.centers) return;
+  const xs = E.centers.map(c=>+(c*100).toFixed(2)), ys = E.counts;
+  const me = (((S.tick||{}).controls||{}).effective||{}).min_edge_after_fees ?? E.min_edge;
+  const below = ys.map((v,i)=>xs[i] < me*100 ? v : null), above = ys.map((v,i)=>xs[i] >= me*100 ? v : null);
+  document.getElementById("edgeInfo").textContent = `${(E.total||0).toLocaleString()} evaluations · ${(E.above_min||0).toLocaleString()} ≥ min · ${(E.passed||0).toLocaleString()} passed all rules`;
+  const bars = uPlot.paths.bars({size:[0.92, 30]});
+  mount("edgeChart", {
+    legend:{live:true}, scales:{x:{time:false, range:[-25,25]}, y:{range:(u,mn,mx)=>[0, Math.max(1,(mx||1))*1.1]}},
+    axes:[axis({label:"Edge after fees (%)", values:(u,v)=>v.map(x=>x+"%")}), axis({label:"Evaluations (count)", size:56})],
+    series:[{label:"Edge bin", value:(u,v)=>v==null?"—":`${(v-0.5).toFixed(0)}% to ${(v+0.5).toFixed(0)}%`},
+      {label:"Below min", fill:"rgba(139,149,168,.55)", stroke:C.muted, paths:bars, points:{show:false}},
+      {label:"≥ min edge", fill:"rgba(61,214,140,.75)", stroke:C.green, paths:bars, points:{show:false}}],
+    hooks:{draw:[u=>{ const b=u.bbox; vline(u, me*100, C.amber, `min ${pct(me)}`, [6,3]); vline(u,0,C.line,"",[1,2]); }]},
+  }, [xs, below, above], 230);
+}
+
+// ---------- blotter, opens, events
+function renderBlotter(){
+  const L = S.ledger; if (!L) return;
+  document.querySelector("#blotter thead").innerHTML = `<tr><th>Time ET</th><th>Market</th><th>Side</th><th class="n">Entry</th><th class="n">Contracts</th><th class="n">Stake $</th><th class="n">Fee</th><th class="n">Model P</th><th class="n">Edge</th><th>Status</th><th>Settles ET</th><th class="n">P&amp;L</th><th class="n">Running equity</th></tr>`;
+  const f = L.fills||[];
+  document.querySelector("#blotter tbody").innerHTML = f.map(r=>`<tr><td>${esc(r.time_et)}</td><td title="${esc(r.market)}">${esc((r.asset||"").toUpperCase())} ${esc(r.horizon)} <span class="mut">${esc(r.market.replace(/^.*updown-\w+-/,""))}</span></td>`+
+    `<td class="${r.side==="up"?"pos":"neg"}"><b>${esc((r.side||"").toUpperCase())}</b></td><td class="n">${cents(r.entry_price)}</td><td class="n">${(+r.contracts).toFixed(2)}</td><td class="n">${usd(r.stake_usd)}</td><td class="n">${usd(r.fee_usd)}</td>`+
+    `<td class="n">${pct(r.model_prob)}</td><td class="n ${cls(r.edge)}">${spct(r.edge)}</td><td class="${r.status==="win"?"pos":r.status==="loss"?"neg":"cy"}">${esc(r.status.toUpperCase())}${r.note?` <span class="mut" title="${esc(r.note)}">*</span>`:""}</td>`+
+    `<td>${esc(r.settle_time_et||"—")}</td><td class="n ${cls(r.pnl_usd)}">${susd(r.pnl_usd)}</td><td class="n">${usd(r.running_equity)}</td></tr>`).join("") || `<tr><td colspan="13" class="mut">No fills today.</td></tr>`;
+  const k = L.kpis;
+  document.querySelector("#blotter tfoot").innerHTML = f.length ? `<tr><td colspan="5"><b>${f.length} fills</b> · ${k.wins}W–${k.losses}L</td><td class="n"><b>${usd(k.staked_today)}</b></td><td class="n">${usd(k.fees_paid)}</td><td colspan="4"></td><td class="n ${cls(k.net_pnl)}"><b>${susd(k.net_pnl)}</b></td><td class="n"><b>${usd(k.equity)}</b></td></tr>` : "";
+  document.getElementById("blotInfo").textContent = `${f.length} fills · ledger v ${L.version}`;
+}
+function renderOpens(){
+  const L = S.ledger; if (!L) return;
+  const o = L.open_positions||[];
+  document.querySelector("#opens thead").innerHTML = `<tr><th>Entered ET</th><th>Market</th><th>Side</th><th class="n">Entry</th><th class="n">Ct</th><th class="n">Stake</th><th class="n">Bid now</th><th class="n">uPnL</th><th>Settles ET</th><th class="n">Left</th></tr>`;
+  const now = (S.tick||{}).ts_unix || Date.now()/1000;
+  document.querySelector("#opens tbody").innerHTML = o.map(r=>{ const g = ((S.tick||{}).grid||[]).find(x=>x.slug===r.market)||{}; const bid = r.side==="up"?g.up_bid:g.down_bid; const u = num(bid)==null?null:r.contracts*bid-r.stake_usd;
+    return `<tr><td>${esc(r.time_et)}</td><td>${esc((r.asset||"").toUpperCase())} ${esc(r.horizon)}</td><td class="${r.side==="up"?"pos":"neg"}">${esc(r.side.toUpperCase())}</td><td class="n">${cents(r.entry_price)}</td><td class="n">${(+r.contracts).toFixed(2)}</td><td class="n">${usd(r.stake_usd)}</td><td class="n">${cents(bid)}</td><td class="n ${cls(u)}">${susd(u)}</td><td>${esc(r.settle_time_et)}</td><td class="n">${dur((r.settle_ts||0)-now)}</td></tr>`; }).join("") || `<tr><td colspan="10" class="mut">No open positions.</td></tr>`;
+  document.getElementById("openInfo").textContent = `${o.length} open · exposure ${usd(L.kpis.open_exposure)}`;
+}
+const EV_KINDS = ["decision","fill","settle","blocked","reject","control","flatten","halt","system"];
+function renderEvFilter(){
+  const el = document.getElementById("evFilter");
+  el.innerHTML = EV_KINDS.map(k=>`<button data-k="${k}" class="${S.evKinds.has(k)?"on":""}">${k}</button>`).join("") + `<input id="evSearch" placeholder="search…" value="${esc(S.evSearch)}">`;
+  el.onclick = e => { const k = e.target.dataset.k; if (!k) return; S.evKinds.has(k)?S.evKinds.delete(k):S.evKinds.add(k); renderEvFilter(); renderEvents(); };
+  document.getElementById("evSearch").oninput = e => { S.evSearch = e.target.value; renderEvents(); };
+}
+function renderEvents(){
+  const q = S.evSearch.toLowerCase();
+  const ev = S.events.filter(e => (!S.evKinds.size || S.evKinds.has(e.kind) || (S.evKinds.has("system") && !EV_KINDS.slice(0,-1).includes(e.kind))) && (!q || (e.message||"").toLowerCase().includes(q) || (e.kind||"").includes(q)));
+  document.querySelector("#events tbody").innerHTML = ev.slice(0,200).map(e=>`<tr><td>${tET(e.ts_unix)}</td><td class="k-${esc(e.kind)}">${esc(e.kind)}</td><td class="mut">${esc(e.component)}</td><td class="wrap">${esc(e.message)}</td></tr>`).join("") || `<tr><td colspan="4" class="mut">No events match.</td></tr>`;
+  document.getElementById("evInfo").textContent = `${ev.length} shown of ${S.events.length} (newest first, last 200)`;
+}
+
+// ---------- controls
+function fieldInput(f, eff){
+  const v = eff[f.key];
+  if (f.kind==="bool") return `<label><span>${esc(f.label)}</span><input type="checkbox" data-key="${f.key}" ${v?"checked":""}></label>`;
+  if (f.kind==="choice") return `<label><span>${esc(f.label)}</span><select data-key="${f.key}" style="background:#0b0d10;color:var(--text);border:1px solid var(--line);font:inherit">${f.choices.map(c=>`<option ${c===v?"selected":""}>${c}</option>`).join("")}</select></label>`;
+  if (f.kind==="subset") return `<label><span>${esc(f.label)}</span><span class="chk">${f.choices.map(c=>`<label style="border:0;padding:0;gap:3px"><input type="checkbox" data-key="${f.key}" data-choice="${c}" ${(v||[]).includes(c)?"checked":""}>${c.toUpperCase()}</label>`).join("")}</span></label>`;
+  const isPct = f.unit==="fraction" && f.key!=="kelly_fraction";
+  const show = isPct ? +(v*100).toFixed(3) : v;
+  const lo = isPct ? f.lo*100 : f.lo, hi = isPct ? f.hi*100 : f.hi;
+  return `<label><span>${esc(f.label)}${isPct?" (%)":""} <span class="note">[${lo}–${hi}]</span></span><input type="number" step="any" data-key="${f.key}" data-pct="${isPct?1:0}" min="${lo}" max="${hi}" value="${show}"></label>`;
+}
+function renderControls(force){
+  const t = S.tick; if (!t || !S.fields.length) return;
+  if (S.ctlDirty && !force) { ctlStatus(); return; }
+  const eff = (t.controls||{}).effective||{};
+  document.getElementById("ctlForm").innerHTML = S.fields.map(f=>fieldInput(f, eff)).join("");
+  document.getElementById("ctlForm").oninput = () => { S.ctlDirty = true; };
+  ctlStatus();
+  const h = t.halt||{};
+  document.getElementById("haltBox").innerHTML = h.halted
+    ? `<b class="neg">HALT latched</b>: ${esc(h.reason)} (${esc(h.component)}) ${esc(h.details||"")}<br>Reset is CLI-only, after the cause is understood: <code>ssh root@droplet /opt/polymarket-bot/scripts/reset_halt.sh --yes</code>`
+    : `HALT latch: <b class="pos">clear</b>. A HALT can only be cleared on the CLI (<code>scripts/reset_halt.sh --yes</code>) after its cause is understood; the UI cannot clear it.`;
+}
+function ctlStatus(){
+  const c = (S.tick||{}).controls||{}; const a = c.applied||{};
+  const el = document.getElementById("ctlMsg");
+  if (S.pendingVersion!=null){
+    const ok = a.engine>=S.pendingVersion && a.execution>=S.pendingVersion;
+    el.innerHTML = ok ? `<span class="pos">✓ v${S.pendingVersion} applied by engine (v${a.engine}) and execution (v${a.execution}) · logged in events</span>` : `<span class="amb">v${S.pendingVersion} saved · waiting for engine (v${a.engine??"?"}) / execution (v${a.execution??"?"})…</span>`;
+    if (ok) setTimeout(()=>{ if (S.pendingVersion!=null && (c.applied||{}).engine>=S.pendingVersion) { S.pendingVersion=null; } }, 8000);
+  } else if (!el.dataset.err) {
+    el.innerHTML = `<span class="mut">controls v${c.version??0}${c.updated_et?" · "+esc(c.updated_et):""} · engine v${a.engine??"?"} · execution v${a.execution??"?"}</span>`;
+  }
+}
+function readForm(){
+  const out = {}; const form = document.getElementById("ctlForm");
+  for (const f of S.fields){
+    if (f.kind==="bool") out[f.key] = form.querySelector(`input[data-key="${f.key}"]`).checked;
+    else if (f.kind==="choice") out[f.key] = form.querySelector(`select[data-key="${f.key}"]`).value;
+    else if (f.kind==="subset") out[f.key] = [...form.querySelectorAll(`input[data-key="${f.key}"]`)].filter(i=>i.checked).map(i=>i.dataset.choice);
+    else { const i = form.querySelector(`input[data-key="${f.key}"]`); let v = parseFloat(i.value); if (i.dataset.pct==="1") v = v/100; out[f.key] = +v.toFixed(6); }
+  }
+  return out;
+}
+function diff(next, cur){
+  const ch = {};
+  for (const k in next){ const a = JSON.stringify(next[k]), b = JSON.stringify(cur[k]); if (a!==b) ch[k]=next[k]; }
+  return ch;
+}
+async function postControls(changes, note){
+  const el = document.getElementById("ctlMsg"); el.dataset.err = "";
+  const r = await fetch("api/controls?"+Q, {method:"POST", headers:{"Content-Type":"application/json","X-Dashboard-Token":TOKEN}, body:JSON.stringify({changes, note})});
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok || !j.ok){ el.dataset.err="1"; el.innerHTML = `<span class="neg">rejected: ${esc(JSON.stringify(j.errors||j.error||r.status))}</span>`; return; }
+  S.pendingVersion = j.version; S.ctlDirty = false; ctlStatus();
+}
+document.getElementById("ctlApply").onclick = async () => {
+  const eff = ((S.tick||{}).controls||{}).effective||{};
+  const ch = diff(readForm(), eff);
+  if (!Object.keys(ch).length){ document.getElementById("ctlMsg").innerHTML = `<span class="mut">no changes</span>`; S.ctlDirty=false; return; }
+  const lines = Object.entries(ch).map(([k,v])=>`  ${k}: ${JSON.stringify(eff[k])} → ${JSON.stringify(v)}`).join("\n");
+  const note = prompt(`Apply these PAPER control changes?\n\n${lines}\n\nOptional note for the event log:`, "");
+  if (note===null) return;
+  await postControls(ch, note);
+};
+document.getElementById("ctlDefaults").onclick = async () => {
+  const eff = ((S.tick||{}).controls||{}).effective||{};
+  const ch = diff(S.defaults, eff);
+  if (!Object.keys(ch).length){ document.getElementById("ctlMsg").innerHTML = `<span class="mut">already at config defaults</span>`; return; }
+  if (!confirm("Reset these controls to config.yaml defaults?\n\n"+Object.entries(ch).map(([k,v])=>`  ${k}: ${JSON.stringify(eff[k])} → ${JSON.stringify(v)}`).join("\n"))) return;
+  await postControls(ch, "reset to config defaults");
+};
+document.getElementById("flatBtn").onclick = async () => {
+  const c = document.getElementById("flatConfirm").value.trim();
+  const el = document.getElementById("ctlMsg"); el.dataset.err = "";
+  if (c !== "FLATTEN"){ el.dataset.err="1"; el.innerHTML = `<span class="neg">type FLATTEN to confirm</span>`; return; }
+  const r = await fetch("api/controls/flatten?"+Q, {method:"POST", headers:{"Content-Type":"application/json","X-Dashboard-Token":TOKEN}, body:JSON.stringify({confirm:c, note:"dashboard flatten"})});
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok || !j.ok){ el.dataset.err="1"; el.innerHTML = `<span class="neg">rejected: ${esc(JSON.stringify(j.errors||j.error||r.status))}</span>`; return; }
+  document.getElementById("flatConfirm").value = ""; S.pendingVersion = j.version; ctlStatus();
+};
+
+// ---------- data flow
+function mergeTickHistory(t){
+  for (const [a, v] of Object.entries(t.indexes||{})){
+    if (!v || v.price==null || !v.ts) continue;
+    const arr = S.idx[a] || (S.idx[a] = []);
+    if (!arr.length || v.ts > arr[arr.length-1][0]) arr.push([v.ts, v.price]);
+    while (arr.length && arr[0][0] < t.ts_unix - 7500) arr.shift();
+  }
+  for (const r of t.grid||[]){
+    if (!r.slug || (r.up_ask==null && r.model_prob_up==null)) continue;
+    const m = S.mkts[r.slug] || (S.mkts[r.slug] = {pts:[]});
+    const last = m.pts[m.pts.length-1];
+    if (last && t.ts_unix - last[0] < 0.9) continue;
+    m.pts.push([t.ts_unix, r.up_ask, r.down_ask, r.model_prob_up, r.edge_up, r.edge_down]);
+    if (m.pts.length > 4000) m.pts.shift();
+  }
+}
+function mergeEvents(list){
+  if (!list || !list.length) return;
+  const seen = new Set(S.events.map(e=>e.ts_unix+"|"+e.message));
+  const add = list.filter(e=>!seen.has(e.ts_unix+"|"+e.message));
+  S.events = add.concat(S.events).sort((a,b)=>(b.ts_unix||0)-(a.ts_unix||0)).slice(0,200);
+}
+function renderLedger(){ renderEquity(); renderBuckets(); renderCum(); renderHour(); renderEdges(); renderBlotter(); renderOpens(); }
+function onTick(t){
+  S.tick = t; mergeTickHistory(t); if (t.events_new) mergeEvents(t.events_new);
+  renderHeader(); renderGrid(); renderIdx(); renderMkt(); renderControls(); renderOpens();
+  if (t.events_new && t.events_new.length) renderEvents();
+}
+async function loadHistory(){
+  try {
+    const r = await fetch("api/history?"+Q); const j = await r.json();
+    for (const [a, pts] of Object.entries(j.index||{})) S.idx[a] = pts;
+    for (const [s, m] of Object.entries(j.markets||{})) S.mkts[s] = {pts:m.pts||[], strike:m.strike, start:m.start, end:m.end};
+  } catch(e) { console.warn("history", e); }
+}
+let es = null, lastMsg = 0;
+function connect(){
+  if (es) es.close();
+  es = new EventSource("api/stream?"+Q);
+  es.onmessage = ev => {
+    lastMsg = Date.now();
+    const m = JSON.parse(ev.data);
+    if (m.kind==="snapshot"){
+      S.fields = m.control_fields||[]; S.defaults = m.defaults||{}; S.ledger = m.ledger; S.edges = m.edges; S.events = (m.events||[]).slice();
+      S.tick = m; mergeTickHistory(m); renderHeader(); renderGrid(); renderIdx(); renderMkt(); renderControls(true); renderLedger(); renderEvFilter(); renderEvents();
+    } else if (m.kind==="tick"){ onTick(m); }
+    else if (m.kind==="ledger"){ S.ledger = m.ledger; if (m.edges) S.edges = m.edges; renderLedger(); }
+  };
+  es.onerror = () => { document.getElementById("riskReason").textContent = "stream disconnected, retrying…"; };
+}
+setInterval(()=>{ if (Date.now()-lastMsg > 8000) connect(); }, 4000);
+setInterval(()=>{ if (S.ledger) renderEquity(); }, 30000);
+setInterval(async ()=>{ try { const r = await fetch("api/state?part=snapshot&"+Q); const m = await r.json(); S.edges = m.edges; renderEdges(); } catch(e){} }, 60000);
+pickers();
+loadHistory().then(connect);
+</script>
+<script src="assets/common.js"></script>
+</body>
+</html>
