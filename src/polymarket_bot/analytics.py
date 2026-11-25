@@ -424,14 +424,20 @@ def edge_histogram(edges: Iterable[float], lo: float = -0.25, hi: float = 0.25, 
     return {"lo": lo, "hi": hi, "width": width, "centers": centers, "counts": counts, "total": total}
 
 
-def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day) -> Optional[dict]:
-    """Profit-lock state for the chart/KPIs, from the same ledger rows the engine uses."""
+def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day,
+                   now: Optional[float] = None, window_mode: str = "rolling_24h",
+                   window_hours: float = 24.0) -> Optional[dict]:
+    """Profit-lock state for the chart/KPIs over the active risk window."""
     if lock_params is None:
         return None
+    import time as _time
     from . import profit_lock as pl
     from .profit_lock import DayStat
+    from .risk import window_start_ts
+    now_ts = _time.time() if now is None else float(now)
+    all_fills = fills_from_rows(rows, tz_name)
     prior: dict = {}
-    for f in fills_from_rows(rows, tz_name):
+    for f in all_fills:
         d = day_of(f.ts, tz_name)
         if d >= day or f.status != "settled" or f.pnl_usd is None:
             continue
@@ -440,42 +446,91 @@ def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day) -> Opti
         r[1 if f.pnl_usd > 0 else 2] += 1
         if f.edge is not None:
             r[3].append(f.edge)
-    hist = [DayStat(d.isoformat(), r[0] / start_equity if start_equity else 0.0, r[1], r[2],
-                    (sum(r[3]) / len(r[3])) if r[3] else None) for d, r in sorted(prior.items())]
+    hist = []
+    running_eq = float(start_equity)
+    for d, r in sorted(prior.items()):
+        denom = max(1.0, running_eq)
+        hist.append(DayStat(d.isoformat(), r[0] / denom, r[1], r[2],
+                            (sum(r[3]) / len(r[3])) if r[3] else None))
+        running_eq += r[0]
     tpct, info = pl.adaptive_target(lock_params, hist)
-    settles = [(f.settle_ts or f.ts, f.pnl_usd) for f in fills if f.status == "settled" and f.pnl_usd is not None]
-    return pl.evaluate(lock_params, start_equity, settles, tpct, info).as_dict()
+    ws = window_start_ts(now_ts, tz_name, window_mode, window_hours)
+    settled = [f for f in all_fills if f.status == "settled" and f.pnl_usd is not None]
+    prior_pnl = sum(f.pnl_usd or 0.0 for f in settled if (f.settle_ts or f.ts) < ws)
+    window_start_eq = round(max(1.0, float(start_equity) + prior_pnl), 6)
+    window_settles = [(f.settle_ts or f.ts, f.pnl_usd) for f in settled if (f.settle_ts or f.ts) >= ws]
+    st = pl.evaluate(lock_params, window_start_eq, window_settles, tpct, info)
+    wlab = f"rolling {window_hours:g}h" if window_mode == "rolling_24h" else "calendar day ET"
+    st.target_info = f"{st.target_info} · {wlab}" if st.target_info else wlab
+    d = st.as_dict()
+    d["window_mode"] = window_mode
+    d["window_start_ts"] = ws
+    d["window_hours"] = window_hours
+    return d
 
 
 def ledger_bundle(rows: list[dict], start_equity: float, target_pct: float, loss_pct: float,
                   assets: Iterable[str], horizons: Iterable[str], tz_name: str = DEFAULT_TZ,
-                  now: Optional[float] = None, day: Optional[date] = None, lock_params=None) -> dict[str, Any]:
-    """Everything the dashboard needs from the ledger for one ET day."""
+                  now: Optional[float] = None, day: Optional[date] = None, lock_params=None,
+                  window_mode: str = "rolling_24h", window_hours: float = 24.0) -> dict[str, Any]:
+    """Continuous lifetime ledger analytics plus separate today & active-window risk state."""
     import time as _time
     now = now or _time.time()
     day = day or day_of(now, tz_name)
-    fills = fills_for_day(fills_from_rows(rows, tz_name), day, tz_name)
-    curve = equity_curve(fills, start_equity, now=now)
+    all_fills = fills_from_rows(rows, tz_name)
+    curve = equity_curve(all_fills, start_equity, now=now)
     dd, _, _ = drawdown_series(curve)
-    kpis = compute_kpis(fills, start_equity, target_pct, loss_pct, now=now)
-    lock = lock_state_for(rows, fills, start_equity, lock_params, tz_name, day)
+    kpis = compute_kpis(all_fills, start_equity, target_pct, loss_pct, now=now)
+
+    today_placed = [f for f in all_fills if day_of(f.ts, tz_name) == day]
+    today_settled = [
+        f for f in all_fills
+        if f.status == "settled" and f.pnl_usd is not None and day_of(f.settle_ts or f.ts, tz_name) == day
+    ]
+    today_wins = sum(1 for f in today_settled if (f.pnl_usd or 0) > 0)
+    today_losses = sum(1 for f in today_settled if (f.pnl_usd or 0) <= 0)
+    today_pnl = sum(f.pnl_usd or 0.0 for f in today_settled)
+    today_staked = sum(f.cost_usd for f in today_placed)
+    today_fees = sum(f.fee_usd for f in today_placed)
+    kpis["staked_total"] = kpis["staked_today"]
+    kpis["staked_today"] = round(today_staked, 2)
+    kpis["today"] = {
+        "day": day.isoformat(),
+        "bets": len(today_placed),
+        "settled": len(today_settled),
+        "wins": today_wins,
+        "losses": today_losses,
+        "net_pnl": round(today_pnl, 2),
+        "staked": round(today_staked, 2),
+        "fees": round(today_fees, 2),
+    }
+
+    lock = lock_state_for(
+        rows, all_fills, start_equity, lock_params, tz_name, day,
+        now=now, window_mode=window_mode, window_hours=window_hours,
+    )
     if lock is not None:
         kpis["lock"] = lock
         kpis["target_usd"] = lock["target_usd"]
         kpis["target_pct"] = lock["target_pct"]
-        kpis["to_target_usd"] = round(lock["target_usd"] - kpis["net_pnl"], 2)
-        kpis["target_hit"] = lock["phase"] in ("LOCKED", "STOPPED_FLOOR", "STOPPED_TARGET") or kpis["net_pnl"] >= lock["target_usd"]
-    sig = (len(fills), round(kpis["net_pnl"], 2), max((f.ts for f in fills), default=0),
-           sum(1 for f in fills if f.status == "settled"))
+        kpis["loss_limit_usd"] = lock["loss_limit_usd"]
+        kpis["to_target_usd"] = round(lock["target_usd"] - lock["pnl"], 2)
+        kpis["to_loss_limit_usd"] = round(lock["pnl"] + lock["loss_limit_usd"], 2)
+        kpis["target_hit"] = lock["phase"] in ("LOCKED", "STOPPED_FLOOR", "STOPPED_TARGET") or lock["pnl"] >= lock["target_usd"]
+        kpis["loss_limit_hit"] = lock["phase"] == "STOPPED_LOSS" or lock["pnl"] - 1e-9 <= -lock["loss_limit_usd"]
+    table = fills_table(all_fills, start_equity, tz_name)
+    sig = (len(all_fills), round(kpis["net_pnl"], 2), max((f.ts for f in all_fills), default=0),
+           sum(1 for f in all_fills if f.status == "settled"), lock["phase"] if lock else "")
     return {
         "day": day.isoformat(),
         "version": "|".join(str(x) for x in sig),
         "kpis": kpis,
-        "fills": fills_table(fills, start_equity, tz_name),
-        "open_positions": [r for r in fills_table(fills, start_equity, tz_name) if r["status"] == "open"],
+        "fills": table[:500],
+        "total_fills": len(table),
+        "open_positions": [r for r in table if r["status"] == "open"],
         "curve": curve,
         "drawdown": dd,
-        "buckets": buckets(fills, assets, horizons),
-        "by_hour": pnl_by_hour(fills, tz_name),
-        "cumulative": cumulative_by_bet(fills),
+        "buckets": buckets(all_fills, assets, horizons),
+        "by_hour": pnl_by_hour(all_fills, tz_name),
+        "cumulative": cumulative_by_bet(all_fills),
     }

@@ -294,8 +294,10 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
     import math
 
     from .. import strategies as strat
+    from .. import patterns as pat
     watcher = _ControlsWatcher(cfg, bus, "engine")
     active_w = strat.ActiveWatcher(cfg.sqlite_path.parent)
+    pat_w = pat.PatternWatcher(cfg.sqlite_path.parent, prior_strength=cfg.pattern_prior_strength)
     engine = RulesEngine(cfg)
     store = Store(cfg.sqlite_path, cfg.trades_csv, cfg.evaluations_csv, cfg.equity_csv)
     recent: list[dict] = []
@@ -303,13 +305,13 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
     last_eval: dict[tuple, tuple] = {}
     tz = cfg.timezone
 
-    def stake_for(sig, m, cash, eff):
+    def stake_for(sig, m, cash, eff, pattern_mult=1.0):
         if sig is None or m is None:
             return None
         try:
             if not (math.isfinite(float(sig.model_prob)) and float(sig.ask) > 0):
                 return None
-            _, cost, _ = size_order(sig, m, cash, eff, size_mult)
+            _, cost, _ = size_order(sig, m, cash, eff, size_mult, pattern_mult=pattern_mult)
             return float(cost)
         except Exception:
             return None
@@ -342,16 +344,42 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             signals = []
             grid = []
             act = active_w.poll()
+            pstore = pat_w.poll()
 
             def apply_strategy(s):
                 sd = signal_to_dict(s)
                 base_checks = list(sd.get("rule_checks") or [])
                 passed, checks = strat.evaluate(act["active"], act["params"], sd, eff.min_edge)
+                feat = pat.extract_features(sd, ts=now_unix, tz_name=tz, cfg=eff, strategy=act["active"])
+                pdec = pstore.evaluate(
+                    feat,
+                    mode=eff.pattern_mode,
+                    min_samples=eff.pattern_min_samples,
+                    min_mult=eff.pattern_min_mult,
+                    max_mult=eff.pattern_max_mult,
+                    skip_ev_threshold=eff.pattern_skip_ev_threshold,
+                )
+                if eff.pattern_mode != "off" and checks:
+                    ev_str = "—" if pdec["post_ev"] is None else f"{pdec['post_ev']:+.1%}"
+                    val_str = f"{ev_str} ({pdec['would_mult']:.2f}×, n={pdec['n']})"
+                    thr_str = f"n≥{eff.pattern_min_samples} · {eff.pattern_mode}"
+                    checks = list(checks) + [{
+                        "name": "pattern",
+                        "passed": pdec["passed"],
+                        "detail": pdec["detail"],
+                        "value": val_str,
+                        "threshold": thr_str,
+                    }]
+                    if not pdec["passed"]:
+                        passed = False
                 sd.update({"base_passed": bool(sd.get("passed")), "base_checks": base_checks,
                            "passed": passed, "rule_checks": checks,
-                           "strategy": act["active"], "strategy_version": act.get("version", 0)})
+                           "strategy": act["active"], "strategy_version": act.get("version", 0),
+                           "pattern": pdec, "pattern_features": feat})
                 if not passed and not sd.get("reasons"):
                     sd["reasons"] = [c.get("detail") or c.get("name") for c in checks if not c.get("passed")]
+                elif not pdec["passed"] and pdec.get("detail"):
+                    sd["reasons"] = list(sd.get("reasons") or []) + [pdec["detail"]]
                 return sd
             for asset in cfg.assets:
                 for horizon in cfg.horizons:
@@ -409,7 +437,8 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         risk_halt=risk_halt, holding=bool(m and m.slug in open_slugs),
                         at_max_positions=open_count >= eff.max_concurrent_positions,
                         max_positions=eff.max_concurrent_positions,
-                        stake_up=stake_for(up, m, cash, eff), stake_down=stake_for(down, m, cash, eff),
+                        stake_up=stake_for(up, m, cash, eff, float(((sds.get("up") or {}).get("pattern") or {}).get("mult") or 1.0)),
+                        stake_down=stake_for(down, m, cash, eff, float(((sds.get("down") or {}).get("pattern") or {}).get("mult") or 1.0)),
                     )
                     row.update({
                         "verdict": v["verdict"], "verdict_side": v["side"], "reason": v["reason"],
@@ -439,6 +468,13 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                             last_eval[ek] = (sig_key, now_unix)
                             try:
                                 store.write_evaluation(datetime.now(ZoneInfo(tz)).isoformat(timespec="seconds"), s)
+                                sd_cur = sds.get(s.side) or {}
+                                if sd_cur.get("pattern_features"):
+                                    pat.append_pattern_eval(
+                                        cfg.sqlite_path.parent,
+                                        sd_cur["pattern_features"],
+                                        sd_cur.get("pattern") or {},
+                                    )
                             except Exception as e:  # never let logging stop evaluation
                                 log.warning("evaluation write failed: %s", e)
             if len(last_decision) > 200:
@@ -478,13 +514,19 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
     from . import controls as ctl
     from ..fees import taker_fee_usd
     from ..models import Signal
-    from ..risk import order_date_in_tz, today_in_tz
     from .. import strategies as strat
+    from .. import patterns as pat
     store = Store(cfg.sqlite_path, cfg.trades_csv, cfg.evaluations_csv, cfg.equity_csv)
     risk = RiskManager(cfg)
     state, cash = restore_state(cfg, store, risk)
     executor = PaperExecutor(cfg, store, risk, state)
     active_w = strat.ActiveWatcher(cfg.sqlite_path.parent)
+    pstore = pat.load_pattern_store(cfg.sqlite_path.parent, prior_strength=cfg.pattern_prior_strength)
+    pstore.sync_from_orders(store.active_orders(), tz_name=cfg.timezone, cfg=cfg,
+                            trade_patterns=store.all_trade_patterns())
+    pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
+    open_features: dict[str, tuple[dict, dict]] = {}
+    shadow_logged: set[str] = set()
     executor.cash = cash
     seen_ids: set[str] = set(store.active_order_ids())
     blocked: dict[str, str] = {}          # cid -> gate reason already logged
@@ -494,9 +536,60 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
     watcher = _ControlsWatcher(cfg, bus, "execution")
     watcher.poll()
     risk.cfg = executor.cfg = watcher.cfg
-    state.kill_reason = risk.daily_halt_reason(state)
+    risk.apply_daily_halts(state)
     handled_flatten = int(watcher.controls.get("flatten_id") or 0)
     tz = cfg.timezone
+
+    def record_settled_pattern(order) -> None:
+        if order.pnl_usd is None:
+            return
+        saved = open_features.pop(order.id, None)
+        if saved is not None:
+            feat, pdec = saved
+        else:
+            feat = pat.extract_features(order, tz_name=tz, cfg=executor.cfg)
+            pdec = {"mode": executor.cfg.pattern_mode, "would_action": None, "would_mult": 1.0, "context": None}
+        feat_rec = {
+            **feat,
+            "pattern_shadow_action": pdec.get("would_action") if pdec.get("mode") == "shadow" else None,
+        }
+        cost = float(order.cost_usd or 0.0)
+        roi = round(float(order.pnl_usd) / max(0.01, cost), 4)
+        store.write_trade_pattern({
+            "order_id": order.id,
+            "ts": order.ts,
+            "window_end": order.window_end,
+            "market_slug": order.market_slug,
+            "asset": order.asset,
+            "horizon": order.horizon,
+            "side": order.side,
+            "hour_et": feat.get("hour_et"),
+            "hour_bucket": feat.get("hour_bucket"),
+            "weekday": feat.get("weekday"),
+            "minutes_left": feat.get("minutes_left"),
+            "distance_sigma": feat.get("distance_sigma"),
+            "distance_bucket": feat.get("distance_bucket"),
+            "vol_regime": feat.get("vol_regime"),
+            "annualized_vol": feat.get("annualized_vol"),
+            "model_prob": order.model_prob,
+            "ask": order.price,
+            "edge": order.edge_after_fees,
+            "spread": feat.get("spread"),
+            "depth_contracts": feat.get("depth_contracts"),
+            "depth_usd": feat.get("depth_usd"),
+            "strategy": feat.get("strategy"),
+            "outcome": order.result,
+            "pnl_usd": order.pnl_usd,
+            "cost_usd": cost,
+            "roi": roi,
+            "pattern_mode": pdec.get("mode"),
+            "pattern_action": pdec.get("would_action"),
+            "pattern_mult": pdec.get("would_mult"),
+            "pattern_context": pdec.get("context"),
+        })
+        if pstore.update_trade(feat_rec, order_id=order.id, pnl_usd=order.pnl_usd,
+                               cost_usd=cost, outcome=order.result or ("win" if order.pnl_usd > 0 else "loss")):
+            pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
 
     def flatten(books_d: dict, flatten_id: int) -> None:
         closed, total = 0, 0.0
@@ -520,6 +613,7 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             executor.cash += payout
             risk.register_settle(state, order)
             store.update_order(order)
+            record_settled_pattern(order)
             closed += 1
             total += pnl
             bus.event("settle", "execution", f"FLATTEN {order.side.upper()} {order.asset.upper()} {order.horizon} @ {mark:.3f} pnl ${pnl:+.2f}",
@@ -555,8 +649,7 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             bus.beat("execution", ok=True, status="halted" if halted else "trading")
             if watcher.poll():
                 risk.cfg = executor.cfg = watcher.cfg
-                # Daily halts are derived from P&L vs the (possibly changed) target/limit.
-                state.kill_reason = risk.daily_halt_reason(state)
+                risk.apply_daily_halts(state)
                 blocked.clear()
             controls = watcher.controls
             disc = bus.snapshot("discovery")
@@ -575,6 +668,7 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             # Settle always (even while halted) so open paper P&L can close.
             try:
                 for o in executor.settle_due(markets, price_map):
+                    record_settled_pattern(o)
                     bus.event("settle", "execution",
                               f"SETTLED {o.side.upper()} {o.asset.upper()} {o.horizon} {o.result} pnl ${o.pnl_usd:+.2f}",
                               pnl=o.pnl_usd, slug=o.market_slug, result=o.result)
@@ -637,13 +731,34 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         reasons=list(raw.get("reasons") or []), passed=True,
                         rule_checks=list(raw.get("rule_checks") or []),
                     )
+                    raw_feat = raw.get("pattern_features") or pat.extract_features(raw, tz_name=tz, cfg=executor.cfg, strategy=act["active"])
+                    raw_pat = pstore.evaluate(
+                        raw_feat,
+                        mode=executor.cfg.pattern_mode,
+                        min_samples=executor.cfg.pattern_min_samples,
+                        min_mult=executor.cfg.pattern_min_mult,
+                        max_mult=executor.cfg.pattern_max_mult,
+                        skip_ev_threshold=executor.cfg.pattern_skip_ev_threshold,
+                        record_shadow=(executor.cfg.pattern_mode == "shadow" and cid not in shadow_logged),
+                    )
+                    if executor.cfg.pattern_mode == "shadow" and cid not in shadow_logged:
+                        shadow_logged.add(cid)
+                        if len(shadow_logged) > 2000:
+                            shadow_logged.clear()
+                        if raw_pat.get("would_action") in ("skip", "reduce", "boost"):
+                            bus.event("pattern", "execution", str(raw_pat.get("detail") or ""), slug=slug)
+                        pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
+                    if executor.cfg.pattern_mode == "active" and not raw_pat.get("passed", True):
+                        continue
+                    pm = float(raw_pat.get("mult") or 1.0) if executor.cfg.pattern_mode == "active" else 1.0
                     # Interlock check immediately before the fill — never skip this.
                     if latch.is_halted():
                         break
-                    filled = executor.try_fill(sig, m)
+                    filled = executor.try_fill(sig, m, pattern_mult=pm)
                     if filled and filled.status == "open":
                         seen_ids.add(cid)
                         seen_ids.add(filled.id)
+                        open_features[filled.id] = (raw_feat, raw_pat)
                         bus.event("fill", "execution",
                                   f"FILL {filled.side.upper()} {filled.asset.upper()} {filled.horizon} {filled.contracts:g} ct @ {filled.price:.3f} stake ${filled.cost_usd:.2f}",
                                   amount=filled.cost_usd, slug=slug, edge=filled.edge_after_fees)
@@ -655,20 +770,28 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                 if len(rejected_at) > 500:
                     rejected_at.clear()
 
+            now_ts = time.time()
+            lock_now = risk.lock_state(state, now=now_ts)
+            state.kill_reason = lock_now.reason
+            base_cash = state.starting_cash if state.starting_cash is not None else executor.cfg.starting_cash
             now_eq = {
-                "ts_unix": time.time(),
+                "ts_unix": now_ts,
                 "cash": executor.cash,
                 "realized": state.realized_pnl,
+                "window_pnl": lock_now.pnl,
                 "open_count": state.open_count,
                 "open_cost": state.open_exposure,
-                "starting_equity": state.starting_day_equity,
-                "equity": state.starting_day_equity + state.realized_pnl,
+                "starting_equity": base_cash,
+                "window_start_equity": state.starting_day_equity,
+                "window_mode": executor.cfg.window_mode,
+                "equity": base_cash + state.realized_pnl,
                 "halted": halted,
-                "risk_halt": state.kill_reason or risk.daily_halt_reason(state),
-                "lock": (lock_now := risk.lock_state(state)).as_dict(),
+                "risk_halt": lock_now.reason,
+                "lock": lock_now.as_dict(),
                 "size_mult": lock_now.size_mult,
                 "entries_paused": ctl.paused(controls),
                 "controls_version": watcher.version,
+                "pattern_mode": executor.cfg.pattern_mode,
             }
             if time.monotonic() - last_equity >= 2:
                 store.write_equity(
@@ -678,14 +801,17 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                 last_equity = time.monotonic()
                 curve.append({"ts": now_eq["ts_unix"], "equity": now_eq["equity"], "realized": now_eq["realized"]})
                 curve[:] = curve[-2000:]
-            day = today_in_tz(tz)
             opens, fills = [], []
-            for o in store.active_orders():
+            active_all = store.active_orders()
+            for o in active_all[-500:]:
                 rec = _order_rec(o)
                 if o.status == "open":
                     opens.append(rec)
-                if order_date_in_tz(o.ts, tz) == day:
-                    fills.append(rec)
+                fills.append(rec)
+            if len(active_all) > 500:
+                for o in active_all[:-500]:
+                    if o.status == "open":
+                        opens.append(_order_rec(o))
             bus.publish("execution", {"pnl": now_eq, "open_positions": opens, "fills": fills, "curve": curve[-500:],
                                       "controls_version": watcher.version})
             bus.beat("execution", ok=True, status="halted" if halted else "trading",

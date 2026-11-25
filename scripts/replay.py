@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
-"""Replay/backtest strategies over recorded evaluations (approximate, offline).
+"""Walk-forward replay/backtest over recorded evaluations (zero lookahead).
 
-    PYTHONPATH=src .venv/bin/python scripts/replay.py [--csv data/evaluations.csv ...] [--stake 10]
+    PYTHONPATH=src .venv/bin/python scripts/replay.py --all [--min-samples 20]
 
 Input: evaluations.csv files (live, or extracted from archive parts). Each row is
 one evaluation of one market side with model_prob, ask, edge, spread, spot,
 price_to_beat, seconds_remaining and the failing rule reasons.
 
-Method (deliberately simple and stated):
-  * Data-quality pass = every failing reason is the edge rule (so strike, timing,
-    spread, liquidity and ask band all passed at that moment).
-  * Entry = the first row per (market, side) the strategy accepts, at that ask,
-    fixed stake (default $10), fees ignored except as already in edge.
-  * Outcome ≈ the last recorded row of that market with ≤ 30s left: UP wins if
-    spot ≥ price_to_beat. The real settlement uses a 60s average, so close
-    calls can differ. Markets without such a row are skipped.
-It answers "which filter would have done better on this tape", not exact P&L.
+Walk-forward rules (zero lookahead):
+  * Before evaluating any row at timestamp t, every previously entered trade
+    whose market window has ended (settle_ts <= t) is settled and fed into
+    the PatternStore online. Future outcomes are never visible at entry time.
+  * Pattern OFF: fixed stake (default $10), no pattern multiplier or skip.
+  * Pattern ON:  PatternStore in 'active' mode, scaling stake within [0.25x, 1.50x]
+                 and skipping contexts with n >= min_samples and EV <= -2% (UCB < 0).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from polymarket_bot import patterns as pat  # noqa: E402
 from polymarket_bot import strategies as strat  # noqa: E402
+from polymarket_bot.analytics import DEFAULT_TZ, ts_unix  # noqa: E402
 
 
 def f(x):
@@ -39,7 +41,12 @@ def f(x):
 
 def load(paths):
     rows = []
+    seen = set()
     for p in paths:
+        rp = str(Path(p).resolve())
+        if rp in seen:
+            continue
+        seen.add(rp)
         with open(p, newline="") as fh:
             rows += list(csv.DictReader(fh))
     rows.sort(key=lambda r: r.get("ts") or "")
@@ -56,39 +63,203 @@ def to_sig(r, cfg_min_edge):
             "seconds_remaining": f(r.get("seconds_remaining")), "horizon": r.get("horizon"), "rule_checks": checks}
 
 
+def _pf_and_dd(pnls: list[float]) -> tuple[str, float]:
+    gw = sum(x for x in pnls if x > 0)
+    gl = -sum(x for x in pnls if x <= 0)
+    pf = f"{gw / gl:.2f}" if gl > 0 else ("inf" if gw > 0 else "-")
+    eq = 0.0
+    pk = 0.0
+    dd = 0.0
+    for x in pnls:
+        eq += x
+        if eq > pk:
+            pk = eq
+        if eq - pk < dd:
+            dd = eq - pk
+    return pf, dd
+
+
+def run_strategy_walkforward(
+    name: str,
+    rows: list[dict],
+    outcome: dict[str, str],
+    settle_ts_map: dict[str, float],
+    *,
+    stake: float,
+    min_edge: float,
+    pattern_mode: str,
+    min_samples: int,
+    prior_strength: float,
+    skip_ev_threshold: float,
+    tz_name: str = DEFAULT_TZ,
+) -> dict:
+    store = pat.PatternStore(prior_strength=prior_strength)
+    taken = set()
+    pending: list[tuple[float, dict]] = []  # (settle_ts, trade_record)
+    pnls: list[float] = []
+    per = defaultdict(float)
+    wins = 0
+    skipped = 0
+    boosted = 0
+    trimmed = 0
+    shadow_delta = 0.0
+
+    def flush_until(t_now: float) -> None:
+        nonlocal pending
+        still = []
+        ready = []
+        for s_ts, rec in pending:
+            if s_ts <= t_now:
+                ready.append((s_ts, rec))
+            else:
+                still.append((s_ts, rec))
+        ready.sort(key=lambda x: x[0])
+        for _, rec in ready:
+            store.update_trade(
+                rec["feats"],
+                order_id=rec["order_id"],
+                pnl_usd=rec["pnl_usd"],
+                cost_usd=rec["stake_usd"],
+                outcome=rec["outcome"],
+            )
+        pending = still
+
+    for i, r in enumerate(rows):
+        t_row = ts_unix(r.get("ts"), tz_name)
+        if t_row is None:
+            continue
+        flush_until(t_row)
+
+        slug = r.get("market_slug") or ""
+        side = r.get("side") or ""
+        key = (slug, side)
+        if key in taken or slug not in outcome:
+            continue
+        ok, _ = strat.evaluate(name, None, to_sig(r, min_edge), min_edge)
+        if not ok:
+            continue
+        taken.add(key)
+
+        ask = f(r.get("ask"))
+        if not ask or ask <= 0 or ask >= 1:
+            continue
+        sr = f(r.get("seconds_remaining")) or 0.0
+        s_ts = settle_ts_map.get(slug) or (t_row + sr)
+        feats = pat.extract_features(r, ts=t_row, tz_name=tz_name, strategy=name)
+        dec = store.evaluate(
+            feats,
+            mode=pattern_mode,
+            min_samples=min_samples,
+            skip_ev_threshold=skip_ev_threshold,
+        )
+        # Also compute shadow evaluation regardless of mode for reporting
+        sh_dec = store.evaluate(
+            feats,
+            mode="active",
+            min_samples=min_samples,
+            skip_ev_threshold=skip_ev_threshold,
+        )
+        won = outcome[slug] == side
+        base_pnl = stake * (1.0 / ask - 1.0) if won else -stake
+        if not sh_dec["passed"]:
+            skipped += 1
+            shadow_delta += (0.0 - base_pnl)
+        elif sh_dec["would_mult"] > 1.0 + 1e-9:
+            boosted += 1
+            shadow_delta += base_pnl * (sh_dec["would_mult"] - 1.0)
+        elif sh_dec["would_mult"] < 1.0 - 1e-9:
+            trimmed += 1
+            shadow_delta += base_pnl * (sh_dec["would_mult"] - 1.0)
+
+        if pattern_mode == "active" and not dec["passed"]:
+            continue
+
+        mult = dec["mult"] if pattern_mode == "active" else 1.0
+        eff_stake = stake * mult
+        p = eff_stake * (1.0 / ask - 1.0) if won else -eff_stake
+        pnls.append(p)
+        if won:
+            wins += 1
+        per[r.get("horizon")] += p
+
+        rec = {
+            "feats": feats,
+            "order_id": f"rep-{name}-{i}",
+            "outcome": "win" if won else "loss",
+            "pnl_usd": p,
+            "stake_usd": eff_stake,
+        }
+        pending.append((s_ts, rec))
+
+    flush_until(float("inf"))
+    n = len(pnls)
+    tot = sum(pnls)
+    pf, dd = _pf_and_dd(pnls)
+    return {
+        "strategy": name,
+        "mode": pattern_mode,
+        "trades": n,
+        "wins": wins,
+        "win_rate": (wins / n) if n else 0.0,
+        "pnl": tot,
+        "avg": (tot / n) if n else 0.0,
+        "pf": pf,
+        "max_dd": dd,
+        "per": dict(per),
+        "would_skip": skipped,
+        "would_boost": boosted,
+        "would_trim": trimmed,
+        "shadow_delta": shadow_delta,
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", nargs="*", default=["data/evaluations.csv"])
+    ap.add_argument("--all", action="store_true", help="include all archived + live evaluations.csv")
     ap.add_argument("--stake", type=float, default=10.0)
     ap.add_argument("--min-edge", type=float, default=0.04, help="configured rules-engine min edge (baseline)")
+    ap.add_argument("--min-samples", type=int, default=20)
+    ap.add_argument("--prior-strength", type=float, default=10.0)
+    ap.add_argument("--skip-ev-threshold", type=float, default=-0.02)
     a = ap.parse_args(argv)
-    rows = load(a.csv)
-    outcome = {}
+
+    paths = list(a.csv)
+    if a.all:
+        paths = sorted(glob.glob("data/archive/*/evaluations.csv")) + ["data/evaluations.csv"]
+        paths = [p for p in paths if Path(p).exists()]
+    rows = load(paths)
+
+    outcome: dict[str, str] = {}
+    settle_ts_map: dict[str, float] = {}
     for r in rows:
         sr, spot, ptb = f(r.get("seconds_remaining")), f(r.get("spot")), f(r.get("price_to_beat"))
+        slug = r.get("market_slug") or ""
+        t_row = ts_unix(r.get("ts"))
+        if t_row is not None and sr is not None:
+            settle_ts_map[slug] = max(settle_ts_map.get(slug, 0.0), t_row + sr)
         if sr is not None and sr <= 30 and spot is not None and ptb is not None:
-            outcome[r["market_slug"]] = "up" if spot >= ptb else "down"
-    print(f"{len(rows)} evaluation rows, {len(outcome)} markets with an end-of-window print\n")
-    print(f"{'strategy':16} {'trades':>6} {'wins':>5} {'win%':>6} {'pnl':>9} {'avg':>7}")
+            outcome[slug] = "up" if spot >= ptb else "down"
+
+    print(f"{len(rows)} evaluation rows from {len(paths)} file(s), {len(outcome)} markets with end-of-window print")
+    print(f"Walk-forward zero-lookahead | stake=${a.stake:.2f} | min_samples={a.min_samples} | skip_ev<={a.skip_ev_threshold:+.1%}\n")
+    print(f"{'strategy':16} {'pat':6} {'trades':>6} {'wins':>5} {'win%':>6} {'pnl':>9} {'avg':>7} {'PF':>6} {'maxDD':>8}   horizons / shadow")
     for name in strat.names():
-        taken = set()
-        pnl, n, w = 0.0, 0, 0
-        per = defaultdict(float)
-        for r in rows:
-            key = (r["market_slug"], r["side"])
-            if key in taken or r["market_slug"] not in outcome:
-                continue
-            ok, _ = strat.evaluate(name, None, to_sig(r, a.min_edge), a.min_edge)
-            if not ok:
-                continue
-            taken.add(key)
-            ask = f(r["ask"])
-            won = outcome[r["market_slug"]] == r["side"]
-            p = a.stake * (1 / ask - 1) if won else -a.stake
-            pnl += p; n += 1; w += won
-            per[r.get("horizon")] += p
-        print(f"{name:16} {n:6d} {w:5d} {(w / n * 100 if n else 0):5.1f}% {pnl:+9.2f} {(pnl / n if n else 0):+7.2f}   "
-              + " ".join(f"{h}:{v:+.0f}" for h, v in sorted(per.items())))
+        off = run_strategy_walkforward(
+            name, rows, outcome, settle_ts_map,
+            stake=a.stake, min_edge=a.min_edge, pattern_mode="off",
+            min_samples=a.min_samples, prior_strength=a.prior_strength, skip_ev_threshold=a.skip_ev_threshold,
+        )
+        on = run_strategy_walkforward(
+            name, rows, outcome, settle_ts_map,
+            stake=a.stake, min_edge=a.min_edge, pattern_mode="active",
+            min_samples=a.min_samples, prior_strength=a.prior_strength, skip_ev_threshold=a.skip_ev_threshold,
+        )
+        for res in (off, on):
+            h_str = " ".join(f"{h}:{v:+.0f}" for h, v in sorted(res["per"].items()))
+            sh = f" | shadow skip={res['would_skip']} boost={res['would_boost']} trim={res['would_trim']} delta={res['shadow_delta']:+.2f}" if res["mode"] == "off" else ""
+            print(f"{res['strategy']:16} {res['mode']:6} {res['trades']:6d} {res['wins']:5d} {res['win_rate']*100:5.1f}% "
+                  f"{res['pnl']:+9.2f} {res['avg']:+7.2f} {res['pf']:>6} {res['max_dd']:+8.2f}   {h_str}{sh}")
     return 0
 
 

@@ -19,9 +19,10 @@ Breaking any of these needs an explicit decision from the owner, written down he
    - The LLM reviewer, archive job, sync acks, TLS, dashboard, strategy lab and alerts **never** halt trading.
    - A reviewer failure keeps the current strategy.
 6. **Strategies cannot bypass data quality.** Every strategy needs all non-edge rule checks to pass, plus edge ≥ 2 %. Parameters are always clamped. Execution skips the fill when engine and execution disagree about the active strategy.
-7. **The promotion gate is deterministic** and works without any LLM. LLM tweaks touch shadow books only.
+7. **The promotion gate is deterministic** and works without any LLM. LLM tweaks touch shadow books only. Adaptive pattern multipliers (`[0.25×, 1.50×]`) are strictly bounded inside existing Kelly, per-bet, exposure, and liquidity hard caps.
 8. **Ledger continuity.**
-   - `data/paper_trades.sqlite` is never replaced.
+   - `data/paper_trades.sqlite` is never replaced, and lifetime equity/cash/P&L/stats carry over continuously across midnight (never wiped to starting bankroll).
+   - Risk windows (`rolling_24h` / `calendar_day`) measure limits against window-start equity and must clear stale stops when a window expires.
    - Open and settled orders are never deleted.
    - Archiving moves only pre-today CSV rows, rotated events and logs.
    - Pruning, which covers rejected orders, equity snapshots and tarballs, happens **only after an ack with a matching sha256**.

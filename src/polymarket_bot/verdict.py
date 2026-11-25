@@ -17,6 +17,7 @@ RULE_LABELS = {
     "ask_bounds": "Ask inside band",
     "min_edge_after_fees": "Edge ≥ min",
     "strategy": "Active strategy filter",
+    "pattern": "Pattern context",
 }
 
 
@@ -90,6 +91,11 @@ def describe_check(chk: dict) -> dict:
         out["value"], out["threshold"] = _pct(v), f"≥ {_pct(th).lstrip('+')}"
         if not passed:
             out["reason"] = f"edge {_pct(v)} < min {_pct(th).lstrip('+')}"
+    elif name == "pattern":
+        out["value"] = str(chk.get("value") or "—")
+        out["threshold"] = str(chk.get("threshold") or "—")
+        out["reason"] = None if passed else (chk.get("detail") or "pattern EV skip")
+        out["code"] = "pattern_skip" if not passed else "pattern"
     else:
         out["reason"] = None if passed else (chk.get("detail") or name)
     return out

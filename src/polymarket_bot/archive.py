@@ -65,6 +65,9 @@ def live_files(data_dir: Path) -> list[Path]:
     sh = data_dir / "strategies" / "shadow"
     if sh.exists():
         out += sorted(p for p in sh.rglob("*") if p.is_file())
+    pt = data_dir / "patterns"
+    if pt.exists():
+        out += sorted(pt.glob("evaluations.jsonl*"))
     return [p for p in out if p.is_file()]
 
 

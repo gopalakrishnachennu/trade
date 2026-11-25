@@ -58,11 +58,20 @@ If the gate passes and `auto_promote` is on, the switch happens and is logged. O
 
 See ARCHITECTURE.md › Profit lock and OPERATIONS.md › Profit lock settings. Shadow books apply the same profit lock, so comparisons are like for like.
 
-## Offline replay
+## Pattern learning layer (Phase 4)
 
-`scripts/replay.py` replays the recorded `evaluations.csv` (live or extracted from archive parts) through every strategy:
+- **Feature capture.** Every evaluation and settled trade records: `asset`, `horizon`, `side`, `hour_et` (`hour_bucket`), `weekday`, `minutes_left`, `distance_sigma` (in σ), `vol_regime`, `model_prob`, `ask`, `edge`, `spread`, `depth_contracts`/`depth_usd`, `strategy`, `outcome`, and `pnl_usd`.
+- **Hierarchical Bayesian posteriors.** `PatternStore` (`src/polymarket_bot/patterns.py`) shrinks each `asset|horizon|hour_bucket` context toward its `asset|horizon` parent and global prior (`prior_strength = 10.0`).
+- **Modes (`patterns.mode` / Control `pattern_mode`):**
+  - `shadow` (default): evaluates and logs counterfactual actions (`would skip`, `would boost`, `would trim`) and verdict checklist lines without changing live sizing or gating trades.
+  - `active`: scales Kelly fraction within `[0.25×, 1.50×]` (never exceeding `max_per_bet_usd`, `max_fraction_of_bankroll`, or liquidity caps) and skips contexts once `n ≥ min_samples` (default 20) with `post_ev ≤ −2 %` and `ev_ucb < 0`.
+  - `off`: kill switch disabling pattern evaluation.
+- **Reviewer integration.** `reviewer.build_payload` passes compact pattern stats (`global`, top/bottom contexts, `vol_regime`, `distance_bucket`, `shadow_stats`) to the reviewer, while the **promotion gate remains 100 % rule-based**.
 
-- The first accepted row per market side is taken at that row's ask with a fixed stake.
-- The outcome is approximated from the last row with ≤ 30 s left.
+## Offline walk-forward replay
 
-Use it to compare filters on the same tape, not as exact P&L.
+`scripts/replay.py --all` replays all recorded `evaluations.csv` files (archived + live) with strict **zero-lookahead** walk-forward settlement:
+
+- Before evaluating a row at time `t`, only simulated trades whose `settle_ts ≤ t` are settled into `PatternStore`.
+- Compares **Pattern OFF** vs **Pattern ON** across every strategy (trades, win%, P&L, avg, profit factor, max drawdown, and shadow-mode counterfactuals).
+- Outcome is approximated from the last row with ≤ 30 s left; use it to compare filters and adaptive gating on the same tape without lookahead bias.

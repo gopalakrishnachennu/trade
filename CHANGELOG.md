@@ -2,6 +2,25 @@
 
 All times ET.
 
+## 2026-11-25 (00:10+) — Phase 4: continuous accounting, rolling 24h risk window & pattern learning
+
+- **Root-cause fix (midnight reset & stale LOCK STOP)**:
+  - Fixed `analytics.ledger_bundle` and `risk.restore_state` so account equity, cash, P&L, fees, staked total, win rate, profit factor, drawdown, and the equity curve are **continuous lifetime metrics** that never reset at midnight ET. Today's P&L and bets are displayed separately (`Today's P&L (ET)`).
+  - Fixed `RiskManager.apply_daily_halts` to clear `kill_reason = None` when the active risk window turns over, eliminating the stale `STOPPED_FLOOR` (`LOCK STOP`) carry-over across days.
+- **Configurable risk windows (`rolling_24h` default / `calendar_day` option)**:
+  - Replaced the hard midnight ET reset with a rolling 24-hour window (`risk.window_mode: rolling_24h`, `risk.window_hours: 24.0`), controllable live via the Controls panel (`window_mode`).
+  - Profit-lock target and −10 % loss limit are now measured against **equity at the start of the active window**, not a fixed $1,000.
+  - `scripts/daily_report.py` remains reporting-only and now displays continuous equity entering the day alongside that day's activity.
+- **Bayesian pattern learning (`src/polymarket_bot/patterns.py`)**:
+  - Logs full context features (`asset`, `horizon`, `hour_et`, `hour_bucket`, `weekday`, `minutes_left`, `distance_sigma`, `vol_regime`, `model_prob`, `ask`, `edge`, `spread`, `depth`, `strategy`, `outcome`, `pnl_usd`) to `data/patterns/evaluations.jsonl`, `data/patterns/store.json`, and SQLite `trade_patterns`.
+  - Computes hierarchical Beta-Binomial win-rate and shrunk EV posteriors (`asset|horizon|hour_bucket` → `asset|horizon` → global).
+  - Runs in `shadow` mode by default (logs counterfactuals and verdict checklist rows without altering live sizing); supports `active` (`[0.25×, 1.50×]` Kelly multiplier within hard caps + skip when `n ≥ min_samples` and `post_ev ≤ -2%` with `ev_ucb < 0`) and `off` via Controls.
+  - Added `/patterns` dashboard page and `/api/patterns` endpoint with 24h × asset/timeframe heat map, dimension breakdown tables, and recent trade features.
+  - Added pattern summary context to `reviewer.build_payload` (promotion gate remains 100 % rule-based).
+- **Walk-forward validation & tests**:
+  - Updated `scripts/replay.py` with zero-lookahead walk-forward simulation (`Pattern OFF` vs `Pattern ON`) and `--all` flag.
+  - Added Phase 4 unit and midnight-rollover simulation tests (`tests/test_phase4.py`).
+
 ## 2026-11-24 (evening) — extension release
 
 - **Profit lock**:

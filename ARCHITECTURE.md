@@ -259,7 +259,7 @@ Caddy hostname: `104-236-203-158.sslip.io`. Permanent dashboard URL (same token 
                  └───────────┴───── file bus: data/runtime/{heartbeats,snapshots,events.jsonl} ──────┘
                                                    │
             dashboard (systemd: polymarket-bot-dashboard, uvicorn 127.0.0.1:8787) ◄── Caddy :443 (TLS)
-            pages: / · /health · /strategies · /integrations · /archives · /rules   API: /api/* · /healthz · /metrics
+            pages: / · /health · /strategies · /patterns · /integrations · /archives · /rules   API: /api/* · /healthz · /metrics
 ```
 
 ### Health and critical components
@@ -279,15 +279,20 @@ Caddy hostname: `104-236-203-158.sslip.io`. Permanent dashboard URL (same token 
 
 A critical system probe must fail on **two consecutive checks** before it latches HALT, so a single glitch is not enough. The latch reason is `health_critical` and the component is the probe name. Reset stays CLI-only.
 
-### Profit lock (dynamic daily target)
+### Continuous accounting, rolling 24h risk window & profit lock
 
-`src/polymarket_bot/profit_lock.py` is a pure function of today's settlements in time order. It is recomputed from the ledger, so it survives restarts.
+- **Continuous lifetime ledger**: `analytics.ledger_bundle` and `risk.restore_state` compute equity, cash, net P&L, staked, win rate, profit factor, drawdown, and the equity curve continuously across all days. Today's P&L and bets are reported separately (`kpis.today`), and the UI equity chart supports `24h | 7d | 30d | ALL`.
+- **Configurable risk window (`rolling_24h` default / `calendar_day` option)**: `risk.window_start_ts` defines the active window start. `starting_day_equity` equals `starting_cash + prior_realized_pnl` at window start, so both the profit-lock target and −10 % loss limit scale dynamically with actual account equity.
+- `src/polymarket_bot/profit_lock.py` evaluates settlements inside the active window in chronological order (`RiskManager.apply_daily_halts` refreshes the window continuously and clears `kill_reason` to `None` when a window turns over):
+  - **TRADING**: full size until window realized P&L reaches the target (fixed `daily_profit_target_pct` or 7-day adaptive target clamped to [3 %, 10 %]).
+  - **LOCKED**: floor = `lock_ratio × peak gain` (default 70 %), ratchets up only; sizing uses `locked_size_mult × Kelly` (default 0.5).
+  - **STOPPED_FLOOR / STOPPED_LOSS / STOPPED_TARGET**: new entries pause for the remainder of the active window while open positions settle normally; automatically clears once old settlements age out of the window.
 
-- **TRADING**: full size until realized P&L reaches the target. The target is the fixed `daily_profit_target_pct`, or an adaptive one computed from the last 7 days' win rate, average edge and daily P&L volatility, clamped to [3 %, 10 %].
-- **LOCKED**: the floor is `lock_ratio × peak gain` (default 70 %) and only ratchets up. Sizing uses `locked_size_mult × Kelly` (default 0.5).
-- **STOPPED_FLOOR**: realized P&L falls to the floor. New entries stop for the day and open positions settle.
-- **STOPPED_LOSS**: the −10 % hard loss limit is hit, in any phase.
-- `mode: fixed` keeps the original behaviour, which stops at the target.
+### Bayesian pattern learning (`src/polymarket_bot/patterns.py`)
+
+- Every evaluation and settled trade extracts context features (`asset`, `horizon`, `hour_et`, `hour_bucket`, `weekday`, `minutes_left`, `distance_sigma`, `vol_regime`, `model_prob`, `ask`, `edge`, `spread`, `depth`, `strategy`, `outcome`, `pnl_usd`) into `data/patterns/evaluations.jsonl`, `data/patterns/store.json`, and SQLite `trade_patterns`.
+- `PatternStore` updates hierarchical Beta-Binomial win-rate and shrunk ROI/EV posteriors online after every settlement (idempotent on `order_id`).
+- Controlled via `pattern_mode` (`off | shadow | active`, default `shadow`) and `pattern_min_samples` (default 20). In `active` mode, scales Kelly within `[0.25×, 1.50×]` inside all hard caps and skips contexts with `n ≥ min_samples` and `post_ev ≤ −2 %` (`ev_ucb < 0`). Served on `/patterns` and `/api/patterns`.
 
 The KPI strip shows the target, peak, floor and mode. The equity chart draws the target line, a stepped floor line and the peak.
 

@@ -53,6 +53,9 @@ These live in the **Controls** panel on the Terminal page (versioned, logged, ap
 | target_min_pct / target_max_pct | 0.03 / 0.10 | 0.005–0.25 | clamp for the adaptive target |
 | adaptive_lookback_days | 7 | 1–30 | history window |
 | daily_loss_limit_pct | 0.10 | — | hard stop in every mode |
+| window_mode | rolling_24h | rolling_24h / calendar_day | risk window (24h rolling vs midnight ET reset), measured from equity at window start |
+| pattern_mode | shadow | off / shadow / active | Bayesian pattern layer (`shadow` logs only; `active` scales Kelly `[0.25×, 1.50×]` and skips EV ≤ −2 %) |
+| pattern_min_samples | 20 | 5–200 | minimum settled trades in a context before pattern scaling/skipping activates |
 
 ## Archiving and the Mac sync
 
@@ -117,4 +120,4 @@ PYTHONPATH=src .venv/bin/python scripts/dashboard_data.py -o data/dashboard.json
 - `/api/export/strategy/<name>.csv`: one shadow book.
 - `/api/export/decisions.csv`: proposals, gate decisions and switches.
 - `/api/report/daily[?day=YYYY-MM-DD]`: the daily text report.
-- `PYTHONPATH=src .venv/bin/python scripts/replay.py --csv data/evaluations.csv`: offline replay of the strategies (approximate; see the script header).
+- `PYTHONPATH=src .venv/bin/python scripts/replay.py --all`: zero-lookahead walk-forward replay comparing Pattern OFF vs Pattern ON across archived and live evaluations.

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · PATTERNS</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+<style>
+.hm{border-collapse:collapse;width:100%;font-size:10px}
+.hm th,.hm td{border:1px solid #1e2430;padding:2px 3px;text-align:center;min-width:34px}
+.hm th.rowh{text-align:left;min-width:74px;background:#0f1218;color:var(--text);font-weight:700;white-space:nowrap}
+.hm td.empty{color:#4b5568;background:#0c0f14}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.tabs button.on{background:var(--amber);color:#1a1400;border-color:var(--amber);font-weight:700}
+.act-SKIP{color:var(--red);font-weight:700}.act-TRIM{color:var(--amber)}.act-BOOST{color:var(--green);font-weight:700}.act-OK{color:var(--muted)}
+.scroll{max-height:360px;overflow:auto}
+</style>
+</head><body>
+<main>
+<h1>PATTERN LEARNING <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="top"></div>
+<h2>HEAT MAP · POSTERIOR EV BY HOUR (ET) × ASSET / TIMEFRAME</h2>
+<div class="panel" style="overflow-x:auto">
+  <div class="mut" style="font-size:11px;margin-bottom:6px">Each cell shows Bayesian-shrunk expected ROI (EV) and sample size <code>n</code> for that asset, timeframe, and ET hour (00–23). Color intensity reflects shrunk EV; cells with <code>n &lt; min_samples</code> stay close to their parent prior and do not gate or scale trades.</div>
+  <div id="heatmap"></div>
+</div>
+<h2>CONTEXT PERFORMANCE &amp; BAYESIAN ESTIMATES</h2>
+<div class="panel">
+  <div class="tabs" id="tabs"></div>
+  <div class="scroll"><table id="tbl"><thead><tr>
+    <th>Context / Feature</th><th class="n">n</th><th class="n">W–L</th><th class="n">Raw WR</th><th class="n">Post WR</th><th class="n">Raw EV</th><th class="n">Post EV</th><th class="n">EV UCB</th><th class="n">P&amp;L</th><th class="n">Mult</th><th>Action</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+<h2>RECENT SETTLED TRADE FEATURES</h2>
+<div class="panel">
+  <div class="scroll"><table id="recent"><thead><tr>
+    <th>Time ET</th><th>Market</th><th>Side</th><th>Hour ET</th><th>Weekday</th><th class="n">Left</th><th class="n">Δ Strike (σ)</th><th>Vol</th><th class="n">Model P</th><th class="n">Edge</th><th>Outcome</th><th class="n">P&amp;L</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+let DATA = null;
+let CUR_TAB = localStorage.getItem("pm.patTab") || "context";
+const TABS = [
+  ["context", "Context (Asset·TF·Hour)"],
+  ["asset_horizon", "Asset × TF"],
+  ["hour_bucket", "Hour Bucket (ET)"],
+  ["vol_regime", "Volatility Regime"],
+  ["distance_bucket", "Distance from Strike"],
+  ["weekday", "Weekday"],
+  ["strategy", "Strategy"],
+];
+
+function evStyle(ev, n, minN) {
+  if (!n) return "";
+  const alpha = Math.min(0.65, 0.14 + Math.min(1, n / Math.max(1, minN)) * 0.45);
+  if (ev >= 0.01) return `background:rgba(61,214,140,${alpha.toFixed(2)});color:#eafff3`;
+  if (ev <= -0.01) return `background:rgba(255,93,93,${alpha.toFixed(2)});color:#ffecec`;
+  return `background:rgba(245,193,74,0.12);color:#d6deea`;
+}
+
+function multFor(r, c) {
+  const minN = c.min_samples || 20, minM = c.min_mult || 0.25, maxM = c.max_mult || 1.5;
+  if ((r.n || 0) < minN) return 1.0;
+  if (r.skip) return minM;
+  return Math.max(minM, Math.min(maxM, +(1.0 + 2.5 * (r.post_ev || 0)).toFixed(2)));
+}
+
+function actionFor(r, c) {
+  const minN = c.min_samples || 20;
+  if ((r.n || 0) < minN) return "COLLECT";
+  if (r.skip) return "SKIP";
+  const m = multFor(r, c);
+  if (m > 1.05) return "BOOST";
+  if (m < 0.95) return "TRIM";
+  return "OK";
+}
+
+async function setMode(mode) {
+  const el = document.getElementById("modeMsg");
+  el.textContent = "updating…";
+  try {
+    await PM.send("POST", "/api/controls", { changes: { pattern_mode: mode }, note: "pattern mode -> " + mode });
+    el.textContent = "saved (" + mode + ")";
+    setTimeout(load, 800);
+  } catch (e) { el.textContent = "error: " + e.message; }
+}
+
+function renderTop(d) {
+  const c = d.config || {}, g = d.global || {}, sh = d.shadow_stats || {};
+  const mode = c.mode || "shadow";
+  const badgeCls = mode === "active" ? "st-OK" : mode === "shadow" ? "st-DEGRADED" : "st-FAILED";
+  document.getElementById("sum").textContent = `· mode: ${mode.toUpperCase()} · ${g.n ?? 0} settled patterns · min_samples=${c.min_samples ?? 20}`;
+  document.getElementById("top").innerHTML = `<div class="kv">
+    <span>Mode</span><span><span class="st ${badgeCls}">${PM.esc(mode.toUpperCase())}</span> <span class="mut">${mode === "shadow" ? "logging what the pattern layer would skip/scale without changing live sizing" : mode === "active" ? "adapting Kelly sizing within caps and skipping negative-EV contexts" : "disabled"}</span></span>
+    <span>Global baseline</span><span><b>${g.n ?? 0}</b> trades · ${g.wins ?? 0}W–${g.losses ?? 0}L · WR <b>${PM.pct(g.win_rate)}</b> · mean ROI <b>${g.post_ev != null ? (g.post_ev >= 0 ? "+" : "") + (g.post_ev * 100).toFixed(1) + "%" : "—"}</b> · P&amp;L <b class="${(g.pnl_usd || 0) >= 0 ? "pos" : "neg"}">${PM.susd(g.pnl_usd)}</b></span>
+    <span>Bayesian params</span><span>prior_strength=${c.prior_strength ?? 10} · min_samples=${c.min_samples ?? 20} · mult bounds [${c.min_mult ?? 0.25}×, ${c.max_mult ?? 1.5}×] · skip if post_EV ≤ ${((c.skip_ev_threshold ?? -0.02) * 100).toFixed(1)}% &amp; UCB &lt; 0</span>
+    <span>Shadow counters</span><span>evaluated <b>${sh.evaluated ?? 0}</b> · would skip <b>${sh.would_skip ?? 0}</b> · would boost <b>${sh.would_boost ?? 0}</b> · would trim <b>${sh.would_reduce ?? 0}</b></span>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <span class="mut">Switch mode:</span>
+    <button class="${mode === "shadow" ? "pri" : ""}" onclick="setMode('shadow')">Shadow (log only)</button>
+    <button class="${mode === "active" ? "pri" : ""}" onclick="setMode('active')">Active (adapt &amp; gate)</button>
+    <button class="${mode === "off" ? "pri" : ""}" onclick="setMode('off')">Off</button>
+    <span id="modeMsg" class="msg mut"></span>
+  </div>`;
+}
+
+function renderHeatmap(d) {
+  const rows = d.heatmap || [];
+  const minN = (d.config || {}).min_samples || 20;
+  if (!rows.length) { document.getElementById("heatmap").innerHTML = '<span class="mut">No settled trades recorded yet.</span>'; return; }
+  const hrs = Array.from({length: 24}, (_, i) => i);
+  let h = `<table class="hm"><thead><tr><th>Asset · TF</th>${hrs.map(hr => `<th>${String(hr).padStart(2, "0")}h</th>`).join("")}</tr></thead><tbody>`;
+  for (const r of rows) {
+    h += `<tr><th class="rowh">${PM.esc(r.label)} <span class="mut">(${r.n})</span></th>`;
+    for (const c of r.cells || []) {
+      if (!c.n) { h += `<td class="empty" title="${PM.esc(r.label)} ${String(c.hour).padStart(2,"0")}:00 ET · no trades">—</td>`; continue; }
+      const evTxt = (c.post_ev >= 0 ? "+" : "") + (c.post_ev * 100).toFixed(1) + "%";
+      const tip = `${r.label} ${String(c.hour).padStart(2,"0")}:00 ET | n=${c.n} (${c.wins}W-${c.n-c.wins}L) | post WR ${(c.post_wr * 100).toFixed(1)}% | post EV ${evTxt} | P&L ${PM.susd(c.pnl)}`;
+      h += `<td style="${evStyle(c.post_ev, c.n, minN)}" title="${PM.esc(tip)}"><div><b>${evTxt}</b></div><div style="font-size:9px;opacity:.8">n=${c.n}</div></td>`;
+    }
+    h += `</tr>`;
+  }
+  h += `</tbody></table>`;
+  document.getElementById("heatmap").innerHTML = h;
+}
+
+function renderTabs(d) {
+  const el = document.getElementById("tabs");
+  el.innerHTML = TABS.map(([k, l]) => `<button data-k="${k}" class="${k === CUR_TAB ? "on" : ""}">${l}</button>`).join("");
+  el.onclick = e => { const k = e.target.dataset.k; if (k) { CUR_TAB = k; localStorage.setItem("pm.patTab", k); renderTabs(d); renderTable(d); } };
+}
+
+function renderTable(d) {
+  const rows = ((d.tables || {})[CUR_TAB]) || [], c = d.config || {};
+  const sp = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+  document.querySelector("#tbl tbody").innerHTML = rows.map(r => {
+    const m = multFor(r, c), act = actionFor(r, c);
+    return `<tr>
+    <td><b>${PM.esc(r.label || r.key)}</b></td>
+    <td class="n">${r.n}</td>
+    <td class="n">${r.wins}–${r.losses}</td>
+    <td class="n">${PM.pct(r.raw_wr)}</td>
+    <td class="n cy">${PM.pct(r.post_wr)}</td>
+    <td class="n ${(r.raw_ev || 0) >= 0 ? "pos" : "neg"}">${sp(r.raw_ev)}</td>
+    <td class="n ${r.post_ev >= 0 ? "pos" : "neg"}"><b>${sp(r.post_ev)}</b></td>
+    <td class="n mut">${sp(r.ev_ucb)}</td>
+    <td class="n ${r.pnl_usd >= 0 ? "pos" : "neg"}">${PM.susd(r.pnl_usd)}</td>
+    <td class="n">${m.toFixed(2)}×</td>
+    <td class="act-${PM.esc(act)}">${PM.esc(act)}</td>
+  </tr>`;
+  }).join("") || `<tr><td colspan="11" class="mut">No rows for this dimension yet.</td></tr>`;
+}
+
+function renderRecent(d) {
+  const rows = d.recent_trades || [];
+  document.querySelector("#recent tbody").innerHTML = rows.map(r => `<tr>
+    <td class="mut">${PM.et(typeof r.ts === 'number' ? r.ts : Date.parse(r.ts) / 1000)}</td>
+    <td><b>${PM.esc((r.asset || "").toUpperCase())}</b> ${PM.esc(r.horizon || "")}</td>
+    <td class="${r.side === "up" ? "pos" : "neg"}">${PM.esc((r.side || "").toUpperCase())}</td>
+    <td>${PM.esc(r.hour_bucket || "—")}</td>
+    <td>${PM.esc(r.weekday || "—")}</td>
+    <td class="n">${r.minutes_left != null ? (+r.minutes_left).toFixed(1) + "m" : "—"}</td>
+    <td class="n">${r.distance_sigma != null ? (+r.distance_sigma).toFixed(2) + "σ" : "—"}</td>
+    <td>${PM.esc(r.vol_regime || "—")}</td>
+    <td class="n">${PM.pct(r.model_prob)}</td>
+    <td class="n ${(r.edge || 0) >= 0 ? "pos" : "neg"}">${r.edge != null ? (r.edge >= 0 ? "+" : "") + (r.edge * 100).toFixed(1) + "%" : "—"}</td>
+    <td class="${r.outcome === "win" ? "pos" : "neg"}">${PM.esc((r.outcome || "").toUpperCase())}</td>
+    <td class="n ${(r.pnl_usd || 0) >= 0 ? "pos" : "neg"}">${PM.susd(r.pnl_usd)}</td>
+  </tr>`).join("") || `<tr><td colspan="12" class="mut">No settled trade features recorded yet.</td></tr>`;
+}
+
+async function load() {
+  try {
+    DATA = await PM.get("/api/patterns");
+    renderTop(DATA); renderHeatmap(DATA); renderTabs(DATA); renderTable(DATA); renderRecent(DATA);
+  } catch (e) {
+    document.getElementById("top").innerHTML = `<span class="neg">Failed to load patterns: ${PM.esc(e.message)}</span>`;
+  }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body></html>

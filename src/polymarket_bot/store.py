@@ -77,6 +77,42 @@ class Store:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trade_patterns (
+                order_id TEXT PRIMARY KEY,
+                ts TEXT NOT NULL,
+                window_end TEXT,
+                market_slug TEXT,
+                asset TEXT,
+                horizon TEXT,
+                side TEXT,
+                hour_et INTEGER,
+                hour_bucket TEXT,
+                weekday TEXT,
+                minutes_left REAL,
+                distance_sigma REAL,
+                distance_bucket TEXT,
+                vol_regime TEXT,
+                annualized_vol REAL,
+                model_prob REAL,
+                ask REAL,
+                edge REAL,
+                spread REAL,
+                depth_contracts REAL,
+                depth_usd REAL,
+                strategy TEXT,
+                outcome TEXT,
+                pnl_usd REAL,
+                cost_usd REAL,
+                roi REAL,
+                pattern_mode TEXT,
+                pattern_action TEXT,
+                pattern_mult REAL,
+                pattern_context TEXT
+            )
+            """
+        )
         self.conn.commit()
         self._init_csv(self.trades_csv, TRADES_FIELDS)
         self._init_csv(self.evaluations_csv, EVAL_FIELDS)
@@ -179,6 +215,32 @@ class Store:
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         rows.sort(key=lambda r: ts_unix(r["ts"]) or 0.0)
         return rows
+
+    def write_trade_pattern(self, rec: dict) -> None:
+        cols = [
+            "order_id", "ts", "window_end", "market_slug", "asset", "horizon", "side",
+            "hour_et", "hour_bucket", "weekday", "minutes_left", "distance_sigma",
+            "distance_bucket", "vol_regime", "annualized_vol", "model_prob", "ask",
+            "edge", "spread", "depth_contracts", "depth_usd", "strategy", "outcome",
+            "pnl_usd", "cost_usd", "roi", "pattern_mode", "pattern_action",
+            "pattern_mult", "pattern_context",
+        ]
+        placeholders = ",".join(["?"] * len(cols))
+        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "order_id")
+        self.conn.execute(
+            f"INSERT INTO trade_patterns ({','.join(cols)}) VALUES ({placeholders}) ON CONFLICT(order_id) DO UPDATE SET {updates}",
+            [rec.get(c) for c in cols],
+        )
+        self.conn.commit()
+
+    def all_trade_patterns(self) -> dict[str, dict]:
+        cur = self.conn.execute("SELECT * FROM trade_patterns")
+        cols = [d[0] for d in cur.description]
+        out = {}
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            out[str(d["order_id"])] = d
+        return out
 
     def close(self) -> None:
         self.conn.close()

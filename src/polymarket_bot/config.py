@@ -178,6 +178,40 @@ class Config:
     def daily_loss_limit_pct(self) -> float:
         return float(_get(self.raw, "risk", "daily_loss_limit_pct", default=0.10))
 
+    @property
+    def window_mode(self) -> str:
+        v = str(_get(self.raw, "risk", "window_mode", default="rolling_24h"))
+        return v if v in ("rolling_24h", "calendar_day") else "rolling_24h"
+
+    @property
+    def window_hours(self) -> float:
+        return max(1.0, float(_get(self.raw, "risk", "window_hours", default=24.0)))
+
+    @property
+    def pattern_mode(self) -> str:
+        v = str(_get(self.raw, "patterns", "mode", default="shadow"))
+        return v if v in ("shadow", "active", "off") else "shadow"
+
+    @property
+    def pattern_min_samples(self) -> int:
+        return max(5, int(_get(self.raw, "patterns", "min_samples", default=20)))
+
+    @property
+    def pattern_prior_strength(self) -> float:
+        return max(1.0, float(_get(self.raw, "patterns", "prior_strength", default=10.0)))
+
+    @property
+    def pattern_min_mult(self) -> float:
+        return max(0.1, min(1.0, float(_get(self.raw, "patterns", "min_mult", default=0.25))))
+
+    @property
+    def pattern_max_mult(self) -> float:
+        return max(1.0, min(2.0, float(_get(self.raw, "patterns", "max_mult", default=1.50))))
+
+    @property
+    def pattern_skip_ev_threshold(self) -> float:
+        return float(_get(self.raw, "patterns", "skip_ev_threshold", default=-0.02))
+
     # ---- dynamic profit target (risk.profit_lock)
     @property
     def target_mode(self) -> str:

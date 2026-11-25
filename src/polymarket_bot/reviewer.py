@@ -198,16 +198,28 @@ SYSTEM = (
 )
 
 
-def build_payload(metrics_doc: dict, settings: dict) -> dict:
+def build_payload(metrics_doc: dict, settings: dict, pattern_summary: Optional[dict] = None) -> dict:
     strats = {}
     for name, s in (metrics_doc.get("strategies") or {}).items():
         m = dict(s.get("metrics") or {})
         m.pop("calibration", None)
         strats[name] = {"description": s.get("description"), "params": s.get("params"), "metrics": m,
                         "today": s.get("today"), "recent_trades": (s.get("recent") or [])[-25:]}
-    return {"active": metrics_doc.get("active"), "strategies": strats,
-            "param_bounds": strat.PARAM_BOUNDS, "gate": {k: settings[k] for k in (
-                "min_trades", "min_margin_usd", "max_dd_ratio", "min_profit_factor", "max_brier")}}
+    payload = {"active": metrics_doc.get("active"), "strategies": strats,
+               "param_bounds": strat.PARAM_BOUNDS, "gate": {k: settings[k] for k in (
+                   "min_trades", "min_margin_usd", "max_dd_ratio", "min_profit_factor", "max_brier")}}
+    if pattern_summary:
+        ctxs = list((pattern_summary.get("tables") or {}).get("context") or [])
+        by_ev = sorted([c for c in ctxs if c.get("n", 0) > 0], key=lambda c: c.get("post_ev", 0), reverse=True)
+        payload["patterns"] = {
+            "global": pattern_summary.get("global"),
+            "top_contexts": by_ev[:6],
+            "bottom_contexts": by_ev[-6:],
+            "vol_regime": (pattern_summary.get("tables") or {}).get("vol_regime"),
+            "distance_bucket": (pattern_summary.get("tables") or {}).get("distance_bucket"),
+            "shadow_stats": pattern_summary.get("shadow_stats"),
+        }
+    return payload
 
 
 def parse_reply(text: str) -> dict:
@@ -291,7 +303,9 @@ def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict
         if llm_call is not None:
             status.update(source="llm", provider=provider, model=model)
             try:
-                reply = parse_reply(llm_call(SYSTEM, json.dumps(build_payload(doc, settings), default=str)))
+                from . import patterns as pat
+                ps = pat.load_pattern_store(data_dir).summary()
+                reply = parse_reply(llm_call(SYSTEM, json.dumps(build_payload(doc, settings, ps), default=str)))
             except Exception as e:
                 from .integrations import scrub
                 err = scrub(f"{type(e).__name__}: {e}")

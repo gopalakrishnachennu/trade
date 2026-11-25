@@ -116,7 +116,7 @@ footer{color:var(--muted);font-size:10px;padding:8px 10px}
 
   <div class="row r32">
     <div class="panel">
-      <h2>EQUITY · TODAY (ET) <span class="sub" id="eqInfo"></span></h2>
+      <h2>EQUITY · LIFETIME <span class="pick" id="pickEqRange"></span> <span class="sub" id="eqInfo"></span></h2>
       <div class="chart" id="eqChart"></div>
       <div class="chart" id="ddChart"></div>
     </div>
@@ -140,11 +140,11 @@ footer{color:var(--muted);font-size:10px;padding:8px 10px}
     <div class="panel"><h2>P&amp;L BY ASSET / HORIZON</h2><div id="buckets"></div></div>
     <div class="panel"><h2>CUMULATIVE P&amp;L BY BET</h2><div class="chart" id="cumChart"></div></div>
     <div class="panel"><h2>P&amp;L BY HOUR (ET)</h2><div class="chart" id="hourChart"></div></div>
-    <div class="panel"><h2>EDGE DISTRIBUTION · TODAY <span class="sub" id="edgeInfo"></span></h2><div class="chart" id="edgeChart"></div></div>
+    <div class="panel"><h2>EDGE DISTRIBUTION · 24H <span class="sub" id="edgeInfo"></span></h2><div class="chart" id="edgeChart"></div></div>
   </div>
 
   <div class="panel" style="margin-bottom:10px">
-    <h2>BLOTTER · TODAY'S FILLS <span class="sub" id="blotInfo"></span></h2>
+    <h2>BLOTTER · RECENT FILLS (LIFETIME) <span class="sub" id="blotInfo"></span></h2>
     <div class="scroll"><table id="blotter"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
   </div>
 
@@ -173,7 +173,7 @@ const S = {
   tick:null, ledger:null, edges:null, events:[], idx:{}, mkts:{}, defaults:{}, fields:[],
   asset: localStorage.getItem("pm.asset") || "btc", tf: localStorage.getItem("pm.tf") || "15m",
   expanded:new Set(JSON.parse(localStorage.getItem("pm.expanded")||"[]")), evKinds:new Set(), evSearch:"",
-  pendingVersion:null, ctlDirty:false,
+  pendingVersion:null, ctlDirty:false, eqRange: localStorage.getItem("pm.eqRange") || "ALL",
 };
 
 // ---------- formatting
@@ -228,11 +228,16 @@ function vline(u, x, color, label, dash=[3,3]){
 
 // ---------- pickers
 function pickers(){
-  const pa = document.getElementById("pickAsset"), pt = document.getElementById("pickTf");
+  const pa = document.getElementById("pickAsset"), pt = document.getElementById("pickTf"), pr = document.getElementById("pickEqRange");
   pa.innerHTML = ASSETS.map(a=>`<button data-a="${a}" class="${a===S.asset?"on":""}">${a.toUpperCase()}</button>`).join("");
   pt.innerHTML = TFS.map(t=>`<button data-t="${t}" class="${t===S.tf?"on":""}">${t}</button>`).join("");
   pa.onclick = e => { const a=e.target.dataset.a; if(a){ select(a, S.tf); } };
   pt.onclick = e => { const t=e.target.dataset.t; if(t){ select(S.asset, t); } };
+  if (pr) {
+    const ranges = [["24h","24H"],["7d","7D"],["30d","30D"],["ALL","ALL"]];
+    pr.innerHTML = ranges.map(([k,l])=>`<button data-r="${k}" class="${k===S.eqRange?"on":""}">${l}</button>`).join("");
+    pr.onclick = e => { const r=e.target.dataset.r; if(r){ S.eqRange=r; localStorage.setItem("pm.eqRange",r); pickers(); renderEquity(); } };
+  }
 }
 function select(a, t){ S.asset=a; S.tf=t; localStorage.setItem("pm.asset",a); localStorage.setItem("pm.tf",t); pickers(); idxBuilt=null; mktBuilt=null; renderIdx(); renderMkt(); renderGrid(); }
 
@@ -344,19 +349,21 @@ function renderHeader(){
   ck.innerHTML = `as of <b>${esc((t.as_of_et||"").replace(/^\d{4}-\d\d-\d\d /,""))}</b> · data age <b>${age==null?"—":age.toFixed(1)+"s"}</b> · ctl <b>v${(t.controls||{}).version??0}</b>`;
   document.getElementById("health").innerHTML = (t.health||[]).map(h=>`<span class="chip ${h.stale?"bad":"ok"}" title="seq ${h.seq} · threshold ${h.threshold}s">${esc(h.component)} ${h.age_seconds==null?"—":h.age_seconds.toFixed(1)+"s"}${h.status?" · "+esc(h.status):""}</span>`).join("")
     + (t.dashboard_error?`<span class="chip bad">dashboard: ${esc(t.dashboard_error)}</span>`:"");
-  const k = t.kpis||{}, mark = unrealized();
+  const k = t.kpis||{}, mark = unrealized(), td = k.today||{};
   const pf = k.profit_factor==null ? (k.gross_winnings>0?"∞":"—") : (+k.profit_factor).toFixed(2);
+  const wStart = k.lock ? (k.lock.start_equity||k.starting_bankroll||0) : (k.starting_bankroll||0);
   document.getElementById("kpis").innerHTML = [
     kpi("Start bankroll", usd(k.starting_bankroll)),
-    kpi("Equity", usd(k.equity), cls(k.net_pnl), mark.n?`mark ${usd(k.equity+mark.u)} (uPnL ${susd(mark.u)})`:"realized basis"),
+    kpi("Lifetime equity", usd(k.equity), cls(k.net_pnl), mark.n?`mark ${usd(k.equity+mark.u)} (uPnL ${susd(mark.u)})`:"realized basis"),
     kpi("Cash", usd(k.cash)),
-    kpi("Net P&L", susd(k.net_pnl), cls(k.net_pnl), spct(k.net_pnl_pct,2)+" of start"),
-    kpi("Staked today", usd(k.staked_today)),
-    kpi("Bets", k.bets??"—", "", `${k.settled??0} settled · ${k.open_count??0} open`),
+    kpi("Lifetime P&L", susd(k.net_pnl), cls(k.net_pnl), spct(k.net_pnl_pct,2)+" of start"),
+    kpi("Today's P&L (ET)", susd(td.net_pnl??0), cls(td.net_pnl??0), `${td.bets??0} bets · ${td.wins??0}W–${td.losses??0}L`),
+    kpi("Staked today", usd(k.staked_today??td.staked??0), "", `lifetime ${usd(k.staked_total)}`),
+    kpi("Lifetime bets", k.bets??"—", "", `${k.settled??0} settled · ${k.open_count??0} open`),
     kpi("Open exposure", usd(k.open_exposure)),
     kpi("Gross wins", usd(k.gross_winnings), "pos"),
     kpi("Gross losses", usd(k.gross_losses), "neg"),
-    kpi("Win rate", pct(k.win_rate), "", `${k.wins??0}W – ${k.losses??0}L`),
+    kpi("Win rate (all)", pct(k.win_rate), "", `${k.wins??0}W – ${k.losses??0}L`),
     kpi("ROI on staked", spct(k.roi_on_staked), cls(k.roi_on_staked)),
     kpi("Avg stake", usd(k.avg_stake)),
     kpi("Avg win / loss", `<span class="pos">${usd(k.avg_win)}</span> / <span class="neg">${usd(k.avg_loss)}</span>`),
@@ -364,7 +371,7 @@ function renderHeader(){
     kpi("Fees paid", usd(k.fees_paid)),
     kpi("Max drawdown", usd(k.max_drawdown_usd), "neg", spct(k.max_drawdown_pct,2)),
     lockKpis(k),
-    kpi(`To −${pct(k.loss_limit_pct,1)} limit`, k.loss_limit_hit?"HIT":usd(k.to_loss_limit_usd), k.loss_limit_hit?"neg":"", `floor ${usd((k.starting_bankroll||0)-(k.loss_limit_usd||0))}`),
+    kpi(`To −${pct(k.loss_limit_pct,1)} limit`, k.loss_limit_hit?"HIT":usd(k.to_loss_limit_usd), k.loss_limit_hit?"neg":"", `floor ${usd(wStart-(k.loss_limit_usd||0))}`),
     kpi("Risk state", esc(rk.state||"—"), rk.state==="TRADING"?"pos":rk.state==="HALTED"||rk.state==="LOSS LIMIT"?"neg":"amb", esc((rk.reason||"").slice(0,60))),
   ].join("");
 }
@@ -372,9 +379,11 @@ function lockKpis(k){
   const L = k.lock; const start = k.starting_bankroll||0;
   if (!L) return kpi(`To +${pct(k.target_pct,1)} target`, k.target_hit?"HIT":usd(k.to_target_usd), k.target_hit?"cy":"", `target ${usd(start+(k.target_usd||0))}`);
   const modeTxt = L.mode==="fixed" ? "fixed stop" : "profit lock";
+  const wLabel = L.window_mode==="calendar_day" ? "day ET" : `rolling ${L.window_hours||24}h`;
   const ph = {TRADING:"TRADING",LOCKED:"LOCKED",STOPPED_FLOOR:"STOPPED (floor)",STOPPED_LOSS:"STOPPED (loss)",STOPPED_TARGET:"STOPPED (target)"}[L.phase]||L.phase;
-  return kpi(`Target +${pct(L.target_pct,2)}`, usd(L.target_equity), L.phase==="TRADING"?"":"cy", `${L.phase==="TRADING"?"to go "+usd(L.target_usd-L.pnl):"hit"} · ${esc(L.target_info.split(":")[0])}`)
-    + kpi("Peak gain", susd(L.peak_usd), cls(L.peak_usd), `peak equity ${usd(L.peak_equity)}`)
+  return kpi(`Window P&L (${wLabel})`, susd(L.pnl), cls(L.pnl), `start ${usd(L.start_equity)}`)
+    + kpi(`Target +${pct(L.target_pct,2)}`, usd(L.target_equity), L.phase==="TRADING"?"":"cy", `${L.phase==="TRADING"?"to go "+usd(L.target_usd-L.pnl):"hit"} · ${esc(L.target_info.split(":")[0])}`)
+    + kpi("Window peak", susd(L.peak_usd), cls(L.peak_usd), `peak equity ${usd(L.peak_equity)}`)
     + kpi(`Locked floor (${pct(S.tick&&S.tick.controls&&S.tick.controls.effective?S.tick.controls.effective.lock_ratio:0.7,0)} of peak)`, L.floor_usd==null?"—":susd(L.floor_usd), L.floor_usd==null?"mut":"amb", L.floor_usd==null?"locks when target is hit":`floor equity ${usd(L.floor_equity)} · cushion ${usd(L.pnl-L.floor_usd)}`)
     + kpi("Target mode", esc(ph), L.phase.startsWith("STOPPED")?"neg":L.phase==="LOCKED"?"amb":"pos", `${modeTxt} · size ${L.size_mult}x Kelly`);
 }
@@ -385,7 +394,7 @@ function unrealized(){
 }
 
 // ---------- grid
-const CK_ORDER = ["price_to_beat_known","window_timing","max_spread","min_liquidity","ask_bounds","min_edge_after_fees"];
+const CK_ORDER = ["price_to_beat_known","window_timing","max_spread","min_liquidity","ask_bounds","min_edge_after_fees","pattern"];
 function vclass(v){ v=String(v||""); return v.startsWith("BUY")?"v-BUY":v==="NO TRADE"?"v-NO":v==="HOLD"?"v-HOLD":v==="OFF"?"v-OFF":"v-WAIT"; }
 function renderGrid(){
   const t = S.tick; if (!t) return;
@@ -428,21 +437,41 @@ document.querySelector("#grid tbody").addEventListener("click", e => {
 });
 
 // ---------- equity + drawdown
+function sliceByRange(arr, now, rangeKey, valKey){
+  const sec = {"24h":86400,"7d":7*86400,"30d":30*86400}[rangeKey] || null;
+  if (!sec || !arr.length) return arr.slice();
+  const cut = now - sec;
+  const out = [];
+  let prev = null;
+  for (const p of arr){
+    if (p.ts < cut) { prev = p; }
+    else { out.push(p); }
+  }
+  if (prev && (!out.length || out[0].ts > cut)){
+    const clone = Object.assign({}, prev, {ts:cut, kind:"start"});
+    if (valKey) clone[valKey] = prev[valKey];
+    out.unshift(clone);
+  }
+  return out;
+}
 function renderEquity(){
   const L = S.ledger; if (!L) return;
   const k = L.kpis, start = k.starting_bankroll, now = (S.tick||{}).ts_unix || Date.now()/1000;
-  const cv = (L.curve||[]).slice();
-  if (cv.length && cv[cv.length-1].ts < now) cv.push({ts:now, equity:cv[cv.length-1].equity, kind:"now"});
+  const rawCv = (L.curve||[]).slice();
+  if (rawCv.length && rawCv[rawCv.length-1].ts < now) rawCv.push({ts:now, equity:rawCv[rawCv.length-1].equity, kind:"now"});
+  const cv = sliceByRange(rawCv, now, S.eqRange, "equity");
   const xs = cv.map(p=>p.ts), ys = cv.map(p=>p.equity);
   const wins = cv.map(p=>p.kind==="win"?p.equity:null), losses = cv.map(p=>p.kind==="loss"?p.equity:null);
   const LK = k.lock || null;
-  const target = LK ? LK.target_equity : start + k.target_usd, floor = start - k.loss_limit_usd;
-  const lockFloor = cv.map(p => { if (!LK || !LK.floor_history || !LK.floor_history.length) return null; let f=null; for (const [ts,v] of LK.floor_history) if (ts <= p.ts) f = start + v; return f; });
+  const wStart = LK ? LK.start_equity : start;
+  const wTs = LK ? (LK.window_start_ts || 0) : 0;
+  const target = LK ? LK.target_equity : start + k.target_usd, floor = wStart - k.loss_limit_usd;
+  const lockFloor = cv.map(p => { if (!LK || !LK.floor_history || !LK.floor_history.length || p.ts < wTs) return null; let f=null; for (const [ts,v] of LK.floor_history) if (ts <= p.ts) f = wStart + v; return f; });
   const peakEq = LK ? LK.peak_equity : null;
-  document.getElementById("eqInfo").textContent = `${usd(start)} → ${usd(k.equity)} (${susd(k.net_pnl)}, ${spct(k.net_pnl_pct,2)}) · ${k.settled} settled · target ${usd(target)} · floor ${usd(floor)}`;
+  document.getElementById("eqInfo").textContent = `[${S.eqRange}] ${usd(start)} → ${usd(k.equity)} (${susd(k.net_pnl)}, ${spct(k.net_pnl_pct,2)}) · ${k.settled} settled · target ${usd(target)} · limit floor ${usd(floor)}`;
   const opts = {
     tzDate, cursor:{sync:{key:"eq"}}, legend:{live:true},
-    scales:{x:{time:true}, y:{range:(u,mn,mx)=>{ let lo=Math.min(mn,start), hi=Math.max(mx,start, peakEq||start); if (Math.abs(target-hi) < (hi-lo)*0.6+20) hi=Math.max(hi,target); if (Math.abs(lo-floor) < (hi-lo)*0.6+20) lo=Math.min(lo,floor); const pad=Math.max((hi-lo)*0.1, 2); return [lo-pad, hi+pad]; }}},
+    scales:{x:{time:true}, y:{range:(u,mn,mx)=>{ let lo=Math.min(mn??wStart, wStart), hi=Math.max(mx??wStart, wStart, peakEq||wStart); if (Math.abs(target-hi) < (hi-lo)*0.6+20) hi=Math.max(hi,target); if (Math.abs(lo-floor) < (hi-lo)*0.6+20) lo=Math.min(lo,floor); const pad=Math.max((hi-lo)*0.1, 2); return [lo-pad, hi+pad]; }}},
     axes:[axis({label:"Time (ET)"}), axis({label:"Equity ($)", size:70, values:usdAxis})],
     series:[{label:"Time ET", value:(u,v)=>v==null?"—":tET(v)},
       {label:"Equity", stroke:C.amber, width:2, fill:"rgba(245,193,74,.06)", paths:uPlot.paths.stepped({align:1}), value:(u,v)=>usd(v), points:{show:false}},
@@ -450,7 +479,7 @@ function renderEquity(){
       {label:"Loss", stroke:C.red, fill:C.red, paths:()=>null, points:{show:true,size:7,fill:C.red,stroke:C.red}, value:(u,v)=>v==null?"—":usd(v)},
       {label:"Locked floor", stroke:C.violet, width:1.5, dash:[4,3], paths:uPlot.paths.stepped({align:1}), points:{show:false}, value:(u,v)=>v==null?"—":usd(v)}],
     hooks:{draw:[u=>{
-      hline(u, start, "y", C.muted, `start ${usd(start,0)}`, [2,3]);
+      hline(u, wStart, "y", C.muted, `${LK?"win start":"start"} ${usd(wStart,0)}`, [2,3]);
       if (peakEq!=null && LK && LK.phase!=="TRADING") hline(u, peakEq, "y", C.green, `peak ${usd(peakEq)}`, [1,3]);
       hline(u, target, "y", C.cyan, `${LK&&LK.mode!=="fixed"?"lock trigger":"target"} +${pct(k.target_pct,1)} ${usd(target,0)}`, [6,3]);
       if (!hline(u, floor, "y", C.red, `−${pct(k.loss_limit_pct,1)} limit ${usd(floor,0)}`, [6,3])) { const b=u.bbox, ctx=u.ctx; ctx.save(); ctx.fillStyle=C.red; ctx.font=`${10*devicePixelRatio}px monospace`; ctx.textAlign="right"; ctx.fillText(`loss limit ${usd(floor,0)} ↓ (off scale)`, b.left+b.width-4*devicePixelRatio, b.top+b.height-4*devicePixelRatio); ctx.restore(); }
@@ -458,7 +487,8 @@ function renderEquity(){
   };
   if (LK && LK.floor_equity!=null) document.getElementById("eqInfo").textContent += ` · ${LK.phase} · floor ${usd(LK.floor_equity)} · peak ${usd(LK.peak_equity)}`;
   mount("eqChart", opts, [xs, ys, wins, losses, lockFloor], 250);
-  const dd = (L.drawdown||[]).slice(); if (dd.length && dd[dd.length-1].ts < now) dd.push({ts:now, dd_usd:dd[dd.length-1].dd_usd, dd_pct:dd[dd.length-1].dd_pct});
+  const rawDd = (L.drawdown||[]).slice(); if (rawDd.length && rawDd[rawDd.length-1].ts < now) rawDd.push({ts:now, dd_usd:rawDd[rawDd.length-1].dd_usd, dd_pct:rawDd[rawDd.length-1].dd_pct});
+  const dd = sliceByRange(rawDd, now, S.eqRange);
   mount("ddChart", {
     tzDate, cursor:{sync:{key:"eq"}}, legend:{live:true},
     scales:{x:{time:true}, y:{range:(u,mn,mx)=>[Math.min(mn??0,-1)*1.15, 0.5]}},
@@ -542,10 +572,10 @@ function renderBlotter(){
   document.querySelector("#blotter tbody").innerHTML = f.map(r=>`<tr><td>${esc(r.time_et)}</td><td title="${esc(r.market)}">${esc((r.asset||"").toUpperCase())} ${esc(r.horizon)} <span class="mut">${esc(r.market.replace(/^.*updown-\w+-/,""))}</span></td>`+
     `<td class="${r.side==="up"?"pos":"neg"}"><b>${esc((r.side||"").toUpperCase())}</b></td><td class="n">${cents(r.entry_price)}</td><td class="n">${(+r.contracts).toFixed(2)}</td><td class="n">${usd(r.stake_usd)}</td><td class="n">${usd(r.fee_usd)}</td>`+
     `<td class="n">${pct(r.model_prob)}</td><td class="n ${cls(r.edge)}">${spct(r.edge)}</td><td class="${r.status==="win"?"pos":r.status==="loss"?"neg":"cy"}">${esc(r.status.toUpperCase())}${r.note?` <span class="mut" title="${esc(r.note)}">*</span>`:""}</td>`+
-    `<td>${esc(r.settle_time_et||"—")}</td><td class="n ${cls(r.pnl_usd)}">${susd(r.pnl_usd)}</td><td class="n">${usd(r.running_equity)}</td></tr>`).join("") || `<tr><td colspan="13" class="mut">No fills today.</td></tr>`;
-  const k = L.kpis;
-  document.querySelector("#blotter tfoot").innerHTML = f.length ? `<tr><td colspan="5"><b>${f.length} fills</b> · ${k.wins}W–${k.losses}L</td><td class="n"><b>${usd(k.staked_today)}</b></td><td class="n">${usd(k.fees_paid)}</td><td colspan="4"></td><td class="n ${cls(k.net_pnl)}"><b>${susd(k.net_pnl)}</b></td><td class="n"><b>${usd(k.equity)}</b></td></tr>` : "";
-  document.getElementById("blotInfo").textContent = `${f.length} fills · ledger v ${L.version}`;
+    `<td>${esc(r.settle_time_et||"—")}</td><td class="n ${cls(r.pnl_usd)}">${susd(r.pnl_usd)}</td><td class="n">${usd(r.running_equity)}</td></tr>`).join("") || `<tr><td colspan="13" class="mut">No fills yet.</td></tr>`;
+  const k = L.kpis, totF = L.total_fills ?? f.length;
+  document.querySelector("#blotter tfoot").innerHTML = f.length ? `<tr><td colspan="5"><b>${totF} total fills</b> · ${k.wins}W–${k.losses}L</td><td class="n"><b>${usd(k.staked_total ?? k.staked_today)}</b></td><td class="n">${usd(k.fees_paid)}</td><td colspan="4"></td><td class="n ${cls(k.net_pnl)}"><b>${susd(k.net_pnl)}</b></td><td class="n"><b>${usd(k.equity)}</b></td></tr>` : "";
+  document.getElementById("blotInfo").textContent = `${f.length} shown of ${totF} · today ${k.today?k.today.bets:0} · ledger v ${L.version}`;
 }
 function renderOpens(){
   const L = S.ledger; if (!L) return;

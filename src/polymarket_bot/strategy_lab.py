@@ -140,13 +140,14 @@ class ShadowBook:
         self.rejected_at: dict[str, float] = {}
         self.day = self.state.day
 
-    def maybe_roll_day(self, cfg) -> None:
-        from .risk import restore_state, today_in_tz
-        if today_in_tz(cfg.timezone) != self.day:
-            self.state, cash = restore_state(cfg, self.store, self.risk)
-            self.executor.state = self.state
-            self.executor.cash = cash
-            self.day = self.state.day
+    def maybe_roll_day(self, cfg, now: Optional[float] = None) -> None:
+        from .risk import day_history, today_in_tz
+        now_ts = time.time() if now is None else float(now)
+        cur_day = today_in_tz(cfg.timezone, now=now_ts)
+        if cur_day != self.day:
+            self.state.history = day_history(self.store.active_orders(), cfg.timezone, cur_day, cfg.starting_cash)
+            self.day = cur_day
+        self.risk.apply_daily_halts(self.state, now=now_ts)
 
 
 def run_lab(cfg, bus, stop: dict, *, data_dir: Optional[Path] = None, review_every_s: Optional[float] = None) -> int:
@@ -226,16 +227,23 @@ def run_lab(cfg, bus, stop: dict, *, data_dir: Optional[Path] = None, review_eve
         if time.time() - last_metrics >= 10:
             last_metrics = time.time()
             active = strat.read_active(data_dir)
-            out = {"ts": time.time(), "starting_equity": cfg.starting_day_equity, "active": active["active"], "active_version": active.get("version", 0), "strategies": {}}
+            from .risk import order_date_in_tz, today_in_tz
+            cur_day = today_in_tz(cfg.timezone)
+            out = {"ts": time.time(), "starting_equity": cfg.starting_cash, "active": active["active"], "active_version": active.get("version", 0), "strategies": {}}
             for name, b in books.items():
                 orders = b.store.active_orders()
-                met = compute_metrics(orders, cfg.starting_day_equity, cfg.timezone)
+                met = compute_metrics(orders, cfg.starting_cash, cfg.timezone)
                 lock = b.risk.lock_state(b.state)
+                today_pnl = sum(
+                    float(o.pnl_usd or 0.0) for o in orders
+                    if o.status == "settled" and o.pnl_usd is not None
+                    and order_date_in_tz(o.window_end or o.ts, cfg.timezone) == cur_day
+                )
                 out["strategies"][name] = {
                     "description": strat.STRATEGIES[name]["description"],
                     "params": params[name],
                     "metrics": met,
-                    "today": {"pnl": round(b.state.realized_pnl, 2), "phase": lock.phase, "cash": round(b.executor.cash, 2)},
+                    "today": {"pnl": round(today_pnl, 2), "window_pnl": round(lock.pnl, 2), "phase": lock.phase, "cash": round(b.executor.cash, 2)},
                     "recent": recent_trades(orders, 40),
                 }
             _atomic_json(sdir / "metrics.json", out)

@@ -52,9 +52,14 @@ def _fmt_money(x: float | None) -> str:
 
 def build_report(cfg, day: date, orders: list[PaperOrder], snaps: list[dict]) -> str:
     tz = cfg.timezone
-    start = cfg.starting_day_equity
-    target = cfg.daily_profit_target_usd
-    loss_lim = cfg.daily_loss_limit_usd
+    prior_pnl = sum(
+        (o.pnl_usd or 0.0) for o in orders
+        if o.status == "settled" and o.pnl_usd is not None
+        and (order_date_in_tz(o.window_end or o.ts, tz) or day) < day
+    )
+    start = cfg.starting_cash + prior_pnl
+    target = start * cfg.daily_profit_target_pct
+    loss_lim = start * cfg.daily_loss_limit_pct
     day_orders = [o for o in orders if _in_day(o.ts, day, tz)]
     fills = [o for o in day_orders if o.status in ("open", "settled")]
     settled = [o for o in fills if o.status == "settled"]
@@ -124,7 +129,7 @@ def build_report(cfg, day: date, orders: list[PaperOrder], snaps: list[dict]) ->
     a(f"Paper trading daily report")
     a(f"Day: {day.isoformat()} ({tz})")
     a(f"Strategy: {cfg.strategy_name}")
-    a(f"Starting day equity: {_fmt_money(start)}")
+    a(f"Account equity entering day: {_fmt_money(start)} (initial bankroll {_fmt_money(cfg.starting_cash)})")
     a(f"Daily profit target: +{cfg.daily_profit_target_pct:.0%} = {_fmt_money(target)}")
     a(f"Daily loss limit:    -{cfg.daily_loss_limit_pct:.0%} = {_fmt_money(loss_lim)}")
     a(f"Target/limit hit: {halt}")

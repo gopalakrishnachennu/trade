@@ -43,10 +43,13 @@ class PaperExecutor:
         self.state = state
         self.cash = cfg.starting_cash
 
-    def try_fill(self, signal: Signal, market: Market) -> Optional[PaperOrder]:
+    def try_fill(self, signal: Signal, market: Market, pattern_mult: float = 1.0) -> Optional[PaperOrder]:
         tz = self.cfg.timezone
         now = datetime.now(timezone.utc)
-        contracts, cost, fee = size_order(signal, market, self.cash, self.cfg, self.risk.size_multiplier(self.state))
+        contracts, cost, fee = size_order(
+            signal, market, self.cash, self.cfg,
+            self.risk.size_multiplier(self.state), pattern_mult=pattern_mult,
+        )
         if contracts <= 0:
             log.info(
                 "skip size=0 %s %s %s edge=%.4f ask=%.3f cash=%.2f",

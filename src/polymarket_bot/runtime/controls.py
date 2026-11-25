@@ -56,6 +56,9 @@ FIELDS: dict[str, Field] = {
     "target_min_pct": Field("float", "Adaptive target min", 0.005, 0.25, path=("risk", "profit_lock", "target_min_pct"), unit="fraction"),
     "target_max_pct": Field("float", "Adaptive target max", 0.005, 0.25, path=("risk", "profit_lock", "target_max_pct"), unit="fraction"),
     "adaptive_lookback_days": Field("float", "Adaptive lookback (days)", 1, 30, path=("risk", "profit_lock", "lookback_days"), unit="days"),
+    "window_mode": Field("choice", "Risk window mode", choices=("rolling_24h", "calendar_day"), path=("risk", "window_mode")),
+    "pattern_mode": Field("choice", "Pattern learning mode", choices=("shadow", "active", "off"), path=("patterns", "mode")),
+    "pattern_min_samples": Field("float", "Pattern min samples", 5, 200, path=("patterns", "min_samples"), unit="trades"),
     "assets": Field("subset", "Enabled assets", choices=ALL_ASSETS),
     "horizons": Field("subset", "Enabled horizons", choices=ALL_HORIZONS),
 }
@@ -83,6 +86,9 @@ def defaults_from(cfg: Config) -> dict[str, Any]:
         "target_min_pct": cfg.target_min_pct,
         "target_max_pct": cfg.target_max_pct,
         "adaptive_lookback_days": cfg.adaptive_lookback_days,
+        "window_mode": cfg.window_mode,
+        "pattern_mode": cfg.pattern_mode,
+        "pattern_min_samples": cfg.pattern_min_samples,
         "assets": list(cfg.assets),
         "horizons": list(cfg.horizons),
     }
@@ -136,6 +142,8 @@ def validate(changes: Any) -> dict[str, Any]:
                 clean[key] = [c for c in f.choices if c in vals]
     if "adaptive_lookback_days" in clean:
         clean["adaptive_lookback_days"] = int(round(clean["adaptive_lookback_days"]))
+    if "pattern_min_samples" in clean:
+        clean["pattern_min_samples"] = int(round(clean["pattern_min_samples"]))
     if errors:
         raise ControlError(errors)
     return clean

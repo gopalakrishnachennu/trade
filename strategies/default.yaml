@@ -57,8 +57,10 @@ sizing:
 
 risk:
   max_per_bet_usd: 50
-  daily_profit_target_pct: 0.05    # initial target (+$50 on a $1,000 day); see profit_lock below
-  daily_loss_limit_pct: 0.10       # -$100 on a $1,000 day; no new entries once hit
+  window_mode: rolling_24h         # rolling_24h (default) or calendar_day (midnight ET reset for limits only)
+  window_hours: 24.0
+  daily_profit_target_pct: 0.05    # initial target (+5% of window-start equity); see profit_lock below
+  daily_loss_limit_pct: 0.10       # -10% of window-start equity; no new entries once hit
   max_concurrent_positions: 4
   # Dynamic profit target. mode: profit_lock (default) or fixed (stop at the target).
   # profit_lock: once realized P&L reaches the (possibly adaptive) target, keep
@@ -77,3 +79,14 @@ risk:
   one_position_per_market: true
   # If this file exists, the bot stops opening new paper trades (existing ones still settle).
   kill_switch_file: data/KILL
+
+patterns:
+  # shadow = record features, compute Bayesian EV & log what it would do (no trade changes)
+  # active = enforce skips for confidently negative EV contexts and scale Kelly [0.25x, 1.50x]
+  # off    = kill switch (pattern layer disabled)
+  mode: shadow
+  min_samples: 20
+  prior_strength: 10.0
+  min_mult: 0.25
+  max_mult: 1.50
+  skip_ev_threshold: -0.02

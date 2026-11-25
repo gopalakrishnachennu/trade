@@ -20,7 +20,7 @@
   PM.pct = (x, d = 1) => x == null || isNaN(x) ? "—" : (x * 100).toFixed(d) + "%";
   PM.bytes = (b) => b == null ? "—" : b > 1e9 ? (b / 1e9).toFixed(2) + " GB" : b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : (b / 1e3).toFixed(0) + " KB";
 
-  const pages = [["/", "TERMINAL"], ["/health", "HEALTH"], ["/strategies", "STRATEGIES"], ["/integrations", "INTEGRATIONS"], ["/archives", "ARCHIVES"], ["/rules", "RULES"], ["/api/report/daily", "DAILY REPORT"], ["/api/export/trades.csv", "CSV"]];
+  const pages = [["/", "TERMINAL"], ["/health", "HEALTH"], ["/strategies", "STRATEGIES"], ["/patterns", "PATTERNS"], ["/integrations", "INTEGRATIONS"], ["/archives", "ARCHIVES"], ["/rules", "RULES"], ["/api/report/daily", "DAILY REPORT"], ["/api/export/trades.csv", "CSV"]];
   function mount() {
     if (document.getElementById("pm-nav")) return;
     const nav = document.createElement("div");

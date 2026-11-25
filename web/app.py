@@ -141,7 +141,7 @@ def risk_state(system: str, system_reason: str, halt: dict, pnl: dict, controls:
     rh = pnl.get("risk_halt")
     lock = pnl.get("lock") or {}
     if rh and "floor" in rh:
-        return {"state": "LOCK STOP", "reason": f"{rh}; new entries stopped for the day, opens settle normally"}
+        return {"state": "LOCK STOP", "reason": f"{rh}; new entries paused for window, opens settle normally"}
     if rh and "target" in rh:
         return {"state": "TARGET HIT", "reason": f"{rh}; new entries blocked, opens settle normally"}
     if rh and "loss" in rh:
@@ -158,25 +158,24 @@ def risk_state(system: str, system_reason: str, halt: dict, pnl: dict, controls:
 
 
 class EdgeTail:
-    """Incremental reader of evaluations.csv for today's edge distribution."""
+    """Incremental reader of evaluations.csv for trailing 24h edge distribution."""
 
     def __init__(self, path: Path):
         self.path = path
         self.offset = 0
-        self.day = None
-        self.edges: list[float] = []
-        self.passed = 0
+        self.edges: deque[tuple[float, float, int]] = deque(maxlen=200_000)
         self.header: Optional[list[str]] = None
 
     def update(self) -> None:
-        today = datetime.now(ET).date().isoformat()
-        if today != self.day:
-            self.day, self.edges, self.passed, self.offset = today, [], 0, 0
+        cutoff = time.time() - 86400.0
+        while self.edges and self.edges[0][0] < cutoff:
+            self.edges.popleft()
         if not self.path.exists():
             return
         size = self.path.stat().st_size
         if size < self.offset:  # rotated / truncated
-            self.offset, self.edges, self.passed = 0, [], 0
+            self.offset = 0
+            self.edges.clear()
         with self.path.open("rb") as f:
             if self.header is None:
                 self.header = f.readline().decode(errors="replace").strip().split(",")
@@ -194,24 +193,22 @@ class EdgeTail:
         body = chunk[: last_nl + 1]
         self.offset = self.offset + len(body) if self.offset else len(body)
         for row in csv.DictReader(io.StringIO(body.decode(errors="replace")), fieldnames=self.header):
-            ts = str(row.get("ts") or "")
-            d = analytics.parse_ts(ts, TZ)
-            if d is None or d.astimezone(ET).date().isoformat() != today:
+            t = analytics.ts_unix(row.get("ts"), TZ)
+            if t is None or t < cutoff:
                 continue
             try:
                 e = float(row.get("edge_after_fees") or "nan")
             except ValueError:
                 continue
             if e == e:
-                self.edges.append(e)
-                if str(row.get("passed")) in ("1", "True", "true"):
-                    self.passed += 1
-        self.edges = self.edges[-200_000:]
+                p = 1 if str(row.get("passed")) in ("1", "True", "true") else 0
+                self.edges.append((t, e, p))
 
     def histogram(self, min_edge: float) -> dict:
-        h = analytics.edge_histogram(self.edges)
-        h["passed"] = self.passed
-        h["above_min"] = sum(1 for e in self.edges if e >= min_edge)
+        vals = [e for _, e, _ in self.edges]
+        h = analytics.edge_histogram(vals)
+        h["passed"] = sum(p for _, _, p in self.edges)
+        h["above_min"] = sum(1 for e in vals if e >= min_edge)
         h["min_edge"] = min_edge
         h["source"] = str(self.path.name)
         return h
@@ -316,7 +313,8 @@ class StateHub:
         from polymarket_bot import profit_lock as pl
         ledger = analytics.ledger_bundle(rows, cfg.starting_cash, eff.daily_profit_target_pct,
                                          eff.daily_loss_limit_pct, cfg.assets, cfg.horizons, TZ, now=now,
-                                         lock_params=pl.params_from_cfg(eff))
+                                         lock_params=pl.params_from_cfg(eff),
+                                         window_mode=eff.window_mode, window_hours=eff.window_hours)
         if time.monotonic() - self._last_edges > 30 or not self.edges:
             if self._edge_tail is None:
                 self._edge_tail = EdgeTail(cfg.evaluations_csv)
@@ -681,6 +679,44 @@ async def page_health():
 @app.get("/strategies")
 async def page_strategies():
     return _page("strategies.html")
+
+
+@app.get("/patterns")
+async def page_patterns():
+    return _page("patterns.html")
+
+
+@app.get("/api/patterns")
+async def api_patterns():
+    await _ensure_state()
+    def build():
+        from polymarket_bot import patterns as pat
+        cfg = HUB.cfg
+        eff = HUB.eff or cfg
+        ps = pat.load_pattern_store(DATA, prior_strength=eff.pattern_prior_strength)
+        if ps.global_stat.n == 0 and cfg and cfg.sqlite_path.exists():
+            # Ensure initial backfill is visible even before execution settles a new trade
+            try:
+                rows = analytics.load_order_rows(cfg.sqlite_path)
+                ps.sync_from_orders(rows, tz_name=TZ, cfg=eff)
+            except Exception:
+                pass
+        doc = ps.summary(
+            assets=eff.assets,
+            horizons=eff.horizons,
+            min_samples=eff.pattern_min_samples,
+            skip_ev_threshold=eff.pattern_skip_ev_threshold,
+        )
+        doc["config"] = {
+            "mode": eff.pattern_mode,
+            "min_samples": eff.pattern_min_samples,
+            "prior_strength": eff.pattern_prior_strength,
+            "min_mult": eff.pattern_min_mult,
+            "max_mult": eff.pattern_max_mult,
+            "skip_ev_threshold": eff.pattern_skip_ev_threshold,
+        }
+        return doc
+    return JSONResponse(await asyncio.to_thread(build), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/integrations")
