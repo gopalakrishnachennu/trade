@@ -22,7 +22,8 @@ Breaking any of these needs an explicit decision from the owner, written down he
 7. **The promotion gate is deterministic** and works without any LLM. LLM tweaks touch shadow books only. Adaptive pattern multipliers (`[0.25×, 1.50×]`) are strictly bounded inside existing Kelly, per-bet, exposure, and liquidity hard caps.
 8. **Ledger continuity.**
    - `data/paper_trades.sqlite` is never replaced, and lifetime equity/cash/P&L/stats carry over continuously across midnight (never wiped to starting bankroll).
-   - Risk windows (`rolling_24h` / `calendar_day`) measure limits against window-start equity and must clear stale stops when a window expires.
+   - Risk windows (`calendar_day` default, or `rolling_24h`) measure session limits against window-start equity and must clear breach counts, cooldowns and floors when a window expires.
+   - A trailing-24h 10 % drawdown from the high-water mark is a fail-closed HALT (`rolling_drawdown`) that only the CLI reset can clear.
    - Open and settled orders are never deleted.
    - Archiving moves only pre-today CSV rows, rotated events and logs.
    - Pruning, which covers rejected orders, equity snapshots and tarballs, happens **only after an ack with a matching sha256**.

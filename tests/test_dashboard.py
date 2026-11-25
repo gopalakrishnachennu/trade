@@ -356,16 +356,20 @@ class ProfitLockTests(unittest.TestCase):
 
     def test_floor_stop_is_sticky(self):
         from polymarket_bot.profit_lock import evaluate
-        st = evaluate(self.P(), 1000, [(1, 60), (2, -20), (3, 30)])  # 60 -> 40 (< 42) stop, later +30 ignored
-        self.assertEqual(st.phase, "STOPPED_FLOOR")
-        self.assertIn("profit lock floor hit", st.reason)
+        # 60 -> 40 (<= 42) starts a 60m cooldown; now defaults to last settle (t=3) so it is still in cooldown.
+        # The later +30 settlement is applied to session P&L but does not resume trading early.
+        st = evaluate(self.P(), 1000, [(1, 60), (2, -20), (3, 30)])
+        self.assertEqual(st.phase, "COOLDOWN")
+        self.assertIn("cooldown after floor breach 1/3", st.reason)
         self.assertAlmostEqual(st.floor_usd, 42.0)
+        self.assertAlmostEqual(st.pnl, 70.0)
+        self.assertEqual(st.breach_count, 1)
 
     def test_loss_limit_and_fixed_mode(self):
         from polymarket_bot.profit_lock import evaluate
         st = evaluate(self.P(), 1000, [(1, -60), (2, -45)])
         self.assertEqual(st.phase, "STOPPED_LOSS")
-        self.assertIn("daily loss limit hit", st.reason)
+        self.assertIn("loss limit hit", st.reason)
         fx = evaluate(self.P(mode="fixed"), 1000, [(1, 30), (2, 25)])
         self.assertEqual(fx.phase, "STOPPED_TARGET")
         self.assertIn("daily profit target hit", fx.reason)

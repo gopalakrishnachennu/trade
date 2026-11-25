@@ -2,6 +2,24 @@
 
 All times ET.
 
+## 2026-11-25 (03:20+) — Phase 5: session P&L, escalating cooldowns, rolling 24h HWM HALT
+
+- **Session-based daily P&L and loss limit** (`risk.window_mode: calendar_day` is now the default; `rolling_24h` remains available in Controls):
+  - Today's P&L, the session profit target, and the −10 % session loss limit reset at midnight ET.
+  - Lifetime equity, cash, win rate, profit factor, drawdown, the equity curve, and the pattern store stay continuous (Phase 4 accounting is unchanged).
+- **Profit lock is now an escalating cooldown**, replacing the sticky full-session `STOPPED_FLOOR` / LOCK STOP:
+  - Once the session target is hit the bot is **LOCKED-HALF**: floor = 70 % of the session peak gain (ratchets up only), trading at 0.5× Kelly.
+  - Floor breach 1 pauses new entries for 60 minutes; breach 2 for 120 minutes. After each cooldown it resumes at 0.5× Kelly with the floor re-armed from current session P&L (peak tracking restarts from that baseline).
+  - Breach 3 (configurable `max_breaches`, default 3) is a **SESSION STOP** for the rest of the calendar day. The third cooldown duration (240 min) is reserved if `max_breaches` is raised.
+  - Everything (breach count, floor, peak, cooldown) resets at the session boundary.
+  - Configurable via versioned config and Controls: `max_breaches`, `cooldown_1_min`, `cooldown_2_min`, `cooldown_3_min`.
+  - Lock state is a pure function of the session's settlements plus `now`, so a process restart reproduces it exactly and it cannot go stale. No side file is used.
+- **Rolling 24h safety guard** (`risk.rolling_guard`, on by default):
+  - If equity is 10 % below its high-water mark at any point in the trailing 24 hours (the window spans midnight), the bot raises a fail-closed `rolling_drawdown` HALT that only `scripts/reset_halt.sh --yes` can clear.
+  - This is independent of the per-session −10 % loss limit. A recovered historical dip does not trip; only current equity vs the lookback HWM does.
+- **Dashboard** risk phases are now `TRADING` / `LOCKED-HALF` / `COOLDOWN` / `SESSION STOP` / `HALT`, with the reason, a countdown to resume, breach count (n/3), session floor and peak, and distance to the rolling-guard trigger. Verdicts use the same wording (e.g. "cooldown after floor breach 1/3, resumes 4:15 AM ET").
+- **Tests & replay**: Phase 5 tests cover cooldown expiry and resume, escalation to session stop, the re-armed floor, midnight breach reset, the rolling guard across midnight, no false trigger on the current ~3.4 % drawdown, and restart persistence. `scripts/replay.py` compares the old sticky full-session floor stop with the new cooldown design on all recorded history.
+
 ## 2026-11-25 (00:10+) — Phase 4: continuous accounting, rolling 24h risk window & pattern learning
 
 - **Root-cause fix (midnight reset & stale LOCK STOP)**:

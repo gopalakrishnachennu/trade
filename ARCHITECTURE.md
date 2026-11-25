@@ -279,14 +279,16 @@ Caddy hostname: `104-236-203-158.sslip.io`. Permanent dashboard URL (same token 
 
 A critical system probe must fail on **two consecutive checks** before it latches HALT, so a single glitch is not enough. The latch reason is `health_critical` and the component is the probe name. Reset stays CLI-only.
 
-### Continuous accounting, rolling 24h risk window & profit lock
+### Continuous accounting, session risk window, escalating profit-lock cooldowns & rolling HWM guard
 
 - **Continuous lifetime ledger**: `analytics.ledger_bundle` and `risk.restore_state` compute equity, cash, net P&L, staked, win rate, profit factor, drawdown, and the equity curve continuously across all days. Today's P&L and bets are reported separately (`kpis.today`), and the UI equity chart supports `24h | 7d | 30d | ALL`.
-- **Configurable risk window (`rolling_24h` default / `calendar_day` option)**: `risk.window_start_ts` defines the active window start. `starting_day_equity` equals `starting_cash + prior_realized_pnl` at window start, so both the profit-lock target and −10 % loss limit scale dynamically with actual account equity.
-- `src/polymarket_bot/profit_lock.py` evaluates settlements inside the active window in chronological order (`RiskManager.apply_daily_halts` refreshes the window continuously and clears `kill_reason` to `None` when a window turns over):
-  - **TRADING**: full size until window realized P&L reaches the target (fixed `daily_profit_target_pct` or 7-day adaptive target clamped to [3 %, 10 %]).
-  - **LOCKED**: floor = `lock_ratio × peak gain` (default 70 %), ratchets up only; sizing uses `locked_size_mult × Kelly` (default 0.5).
-  - **STOPPED_FLOOR / STOPPED_LOSS / STOPPED_TARGET**: new entries pause for the remainder of the active window while open positions settle normally; automatically clears once old settlements age out of the window.
+- **Configurable risk window (`calendar_day` default / `rolling_24h` option)**: `risk.window_start_ts` defines the active session start (midnight ET by default). `starting_day_equity` equals `starting_cash + prior_realized_pnl` at window start, so both the profit-lock target and −10 % session loss limit scale with actual account equity and reset at the session boundary.
+- `src/polymarket_bot/profit_lock.py` is a pure function of the session's settlements plus `now` (`RiskManager.apply_daily_halts` refreshes the window continuously). A process restart reproduces the same phase; there is no side file that can go stale. Settlements that share a timestamp are applied together.
+  - **TRADING**: full size until session realized P&L reaches the target (fixed `daily_profit_target_pct` or 7-day adaptive target clamped to [3 %, 10 %]).
+  - **LOCKED** (dashboard **LOCKED-HALF**): floor = `segment_base + lock_ratio × (peak − segment_base)` (default 70 %), ratchets up only; sizing uses `locked_size_mult × Kelly` (default 0.5).
+  - **COOLDOWN**: floor breach *n* (for *n* < `max_breaches`, default 3) pauses new entries for `cooldown_minutes[n-1]` minutes (default 60, then 120). After expiry the bot resumes LOCKED-HALF with the floor re-armed from current session P&L and peak tracking restarted from that baseline.
+  - **STOPPED_SESSION / STOPPED_LOSS / STOPPED_TARGET**: the `max_breaches`-th floor breach, the session −10 % loss limit, or (fixed mode) the target. New entries pause for the rest of the session; open positions settle normally. Everything resets at the session boundary.
+- **Rolling 24h HWM guard** (`risk.trailing_hwm_state`): if current equity is `rolling_guard_pct` (default 10 %) below the high-water mark inside the trailing `rolling_guard_hours` (default 24h, spanning midnight), execution trips a fail-closed `rolling_drawdown` HALT. Only `scripts/reset_halt.sh --yes` clears it. A recovered historical dip does not trip.
 
 ### Bayesian pattern learning (`src/polymarket_bot/patterns.py`)
 

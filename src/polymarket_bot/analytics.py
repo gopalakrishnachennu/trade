@@ -425,7 +425,7 @@ def edge_histogram(edges: Iterable[float], lo: float = -0.25, hi: float = 0.25, 
 
 
 def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day,
-                   now: Optional[float] = None, window_mode: str = "rolling_24h",
+                   now: Optional[float] = None, window_mode: str = "calendar_day",
                    window_hours: float = 24.0) -> Optional[dict]:
     """Profit-lock state for the chart/KPIs over the active risk window."""
     if lock_params is None:
@@ -459,7 +459,7 @@ def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day,
     prior_pnl = sum(f.pnl_usd or 0.0 for f in settled if (f.settle_ts or f.ts) < ws)
     window_start_eq = round(max(1.0, float(start_equity) + prior_pnl), 6)
     window_settles = [(f.settle_ts or f.ts, f.pnl_usd) for f in settled if (f.settle_ts or f.ts) >= ws]
-    st = pl.evaluate(lock_params, window_start_eq, window_settles, tpct, info)
+    st = pl.evaluate(lock_params, window_start_eq, window_settles, tpct, info, now=now_ts)
     wlab = f"rolling {window_hours:g}h" if window_mode == "rolling_24h" else "calendar day ET"
     st.target_info = f"{st.target_info} · {wlab}" if st.target_info else wlab
     d = st.as_dict()
@@ -472,7 +472,7 @@ def lock_state_for(rows, fills, start_equity, lock_params, tz_name, day,
 def ledger_bundle(rows: list[dict], start_equity: float, target_pct: float, loss_pct: float,
                   assets: Iterable[str], horizons: Iterable[str], tz_name: str = DEFAULT_TZ,
                   now: Optional[float] = None, day: Optional[date] = None, lock_params=None,
-                  window_mode: str = "rolling_24h", window_hours: float = 24.0) -> dict[str, Any]:
+                  window_mode: str = "calendar_day", window_hours: float = 24.0) -> dict[str, Any]:
     """Continuous lifetime ledger analytics plus separate today & active-window risk state."""
     import time as _time
     now = now or _time.time()
@@ -516,8 +516,11 @@ def ledger_bundle(rows: list[dict], start_equity: float, target_pct: float, loss
         kpis["loss_limit_usd"] = lock["loss_limit_usd"]
         kpis["to_target_usd"] = round(lock["target_usd"] - lock["pnl"], 2)
         kpis["to_loss_limit_usd"] = round(lock["pnl"] + lock["loss_limit_usd"], 2)
-        kpis["target_hit"] = lock["phase"] in ("LOCKED", "STOPPED_FLOOR", "STOPPED_TARGET") or lock["pnl"] >= lock["target_usd"]
+        kpis["target_hit"] = lock["phase"] in ("LOCKED", "COOLDOWN", "STOPPED_SESSION", "STOPPED_FLOOR", "STOPPED_TARGET") or lock["pnl"] >= lock["target_usd"]
         kpis["loss_limit_hit"] = lock["phase"] == "STOPPED_LOSS" or lock["pnl"] - 1e-9 <= -lock["loss_limit_usd"]
+    from .risk import trailing_hwm_state
+    settled_pairs = [(f.settle_ts or f.ts, f.pnl_usd) for f in all_fills if f.status == "settled" and f.pnl_usd is not None]
+    kpis["rolling_guard"] = trailing_hwm_state(settled_pairs, start_equity, now, lookback_hours=window_hours, drawdown_pct=0.10)
     table = fills_table(all_fills, start_equity, tz_name)
     sig = (len(all_fills), round(kpis["net_pnl"], 2), max((f.ts for f in all_fills), default=0),
            sum(1 for f in all_fills if f.status == "settled"), lock["phase"] if lock else "")

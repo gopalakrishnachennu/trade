@@ -774,6 +774,23 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             lock_now = risk.lock_state(state, now=now_ts)
             state.kill_reason = lock_now.reason
             base_cash = state.starting_cash if state.starting_cash is not None else executor.cfg.starting_cash
+            from ..risk import trailing_hwm_state
+            guard = trailing_hwm_state(
+                state.all_settles or [],
+                float(base_cash),
+                now_ts,
+                lookback_hours=executor.cfg.rolling_guard_hours,
+                drawdown_pct=executor.cfg.rolling_guard_pct,
+            )
+            if (not halted) and executor.cfg.rolling_guard_enabled and guard.get("triggered"):
+                detail = (
+                    f"equity ${guard['equity']:.2f} is {abs(guard['drawdown_pct_actual']):.1%} "
+                    f"below {guard['lookback_hours']:g}h HWM ${guard['hwm_equity']:.2f} "
+                    f"(limit {guard['drawdown_pct']:.0%})"
+                )
+                latch.trip("rolling_drawdown", "execution", detail)
+                bus.event("halt", "execution", detail)
+                halted = True
             now_eq = {
                 "ts_unix": now_ts,
                 "cash": executor.cash,
@@ -788,6 +805,7 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                 "halted": halted,
                 "risk_halt": lock_now.reason,
                 "lock": lock_now.as_dict(),
+                "rolling_guard": guard,
                 "size_mult": lock_now.size_mult,
                 "entries_paused": ctl.paused(controls),
                 "controls_version": watcher.version,

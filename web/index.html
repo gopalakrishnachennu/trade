@@ -15,8 +15,8 @@ header.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:6
 .brand{font-weight:700;letter-spacing:.08em;color:var(--amber)}
 .tag{border:1px solid var(--amber);color:var(--amber);padding:0 5px;font-size:10px;letter-spacing:.1em}
 .badge{font-weight:800;letter-spacing:.1em;padding:2px 8px;border-radius:2px;white-space:nowrap}
-.b-TRADING{background:var(--green);color:#04140c}.b-HALTED,.b-LOSS{background:var(--red);color:#1a0000}
-.b-STALE,.b-PAUSED,.b-BLOCKED,.b-LOCK{background:var(--amber);color:#1a1400}.b-PROFIT{background:var(--violet);color:#14002a}.b-TARGET{background:var(--cyan);color:#001826}
+.b-TRADING{background:var(--green);color:#04140c}.b-HALT,.b-HALTED,.b-LOSS,.b-SESSION{background:var(--red);color:#1a0000}
+.b-STALE,.b-PAUSED,.b-BLOCKED,.b-LOCK,.b-COOLDOWN{background:var(--amber);color:#1a1400}.b-PROFIT,.b-LOCKED-HALF{background:var(--violet);color:#14002a}.b-TARGET{background:var(--cyan);color:#001826}
 .riskreason{color:var(--muted);flex:1;min-width:200px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .clocks{color:var(--muted)}.clocks b{color:var(--text);font-weight:600}.clocks.bad b{color:var(--red)}
 nav{display:flex;gap:12px}
@@ -372,20 +372,36 @@ function renderHeader(){
     kpi("Max drawdown", usd(k.max_drawdown_usd), "neg", spct(k.max_drawdown_pct,2)),
     lockKpis(k),
     kpi(`To −${pct(k.loss_limit_pct,1)} limit`, k.loss_limit_hit?"HIT":usd(k.to_loss_limit_usd), k.loss_limit_hit?"neg":"", `floor ${usd(wStart-(k.loss_limit_usd||0))}`),
-    kpi("Risk state", esc(rk.state||"—"), rk.state==="TRADING"?"pos":rk.state==="HALTED"||rk.state==="LOSS LIMIT"?"neg":"amb", esc((rk.reason||"").slice(0,60))),
+    kpi("Risk state", esc(rk.state||"—"), rk.state==="TRADING"?"pos":(rk.state==="HALT"||rk.state==="HALTED"||rk.state==="SESSION STOP"||rk.state==="LOSS LIMIT")?"neg":"amb", esc((rk.reason||"").slice(0,80))),
   ].join("");
+}
+function countdown(until){
+  if (until==null) return "—";
+  const s = Math.max(0, Math.floor(until - Date.now()/1000));
+  if (s<=0) return "due now";
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  return (h?h+"h ":"")+(h||m?m+"m ":"")+sec+"s";
 }
 function lockKpis(k){
   const L = k.lock; const start = k.starting_bankroll||0;
+  const rk = (S.tick||{}).risk||{};
   if (!L) return kpi(`To +${pct(k.target_pct,1)} target`, k.target_hit?"HIT":usd(k.to_target_usd), k.target_hit?"cy":"", `target ${usd(start+(k.target_usd||0))}`);
   const modeTxt = L.mode==="fixed" ? "fixed stop" : "profit lock";
-  const wLabel = L.window_mode==="calendar_day" ? "day ET" : `rolling ${L.window_hours||24}h`;
-  const ph = {TRADING:"TRADING",LOCKED:"LOCKED",STOPPED_FLOOR:"STOPPED (floor)",STOPPED_LOSS:"STOPPED (loss)",STOPPED_TARGET:"STOPPED (target)"}[L.phase]||L.phase;
-  return kpi(`Window P&L (${wLabel})`, susd(L.pnl), cls(L.pnl), `start ${usd(L.start_equity)}`)
-    + kpi(`Target +${pct(L.target_pct,2)}`, usd(L.target_equity), L.phase==="TRADING"?"":"cy", `${L.phase==="TRADING"?"to go "+usd(L.target_usd-L.pnl):"hit"} · ${esc(L.target_info.split(":")[0])}`)
-    + kpi("Window peak", susd(L.peak_usd), cls(L.peak_usd), `peak equity ${usd(L.peak_equity)}`)
-    + kpi(`Locked floor (${pct(S.tick&&S.tick.controls&&S.tick.controls.effective?S.tick.controls.effective.lock_ratio:0.7,0)} of peak)`, L.floor_usd==null?"—":susd(L.floor_usd), L.floor_usd==null?"mut":"amb", L.floor_usd==null?"locks when target is hit":`floor equity ${usd(L.floor_equity)} · cushion ${usd(L.pnl-L.floor_usd)}`)
-    + kpi("Target mode", esc(ph), L.phase.startsWith("STOPPED")?"neg":L.phase==="LOCKED"?"amb":"pos", `${modeTxt} · size ${L.size_mult}x Kelly`);
+  const wLabel = L.window_mode==="calendar_day" ? "session ET" : `rolling ${L.window_hours||24}h`;
+  const ph = L.display_phase || ({TRADING:"TRADING",LOCKED:"LOCKED-HALF",COOLDOWN:"COOLDOWN",STOPPED_FLOOR:"SESSION STOP",STOPPED_LOSS:"SESSION STOP",STOPPED_TARGET:"SESSION STOP",STOPPED_SESSION:"SESSION STOP"}[L.phase]||L.phase);
+  const bc = L.breach_count||0, mb = L.max_breaches||3;
+  const g = (S.tick&&S.tick.pnl&&S.tick.pnl.rolling_guard) || k.rolling_guard || rk.rolling_guard || {};
+  const resume = L.phase==="COOLDOWN" ? (L.resume_et ? "resumes "+L.resume_et+" ("+countdown(L.cooldown_until)+")" : countdown(L.cooldown_until)) : (bc+"/"+mb+" breaches");
+  const phaseSub = L.phase==="COOLDOWN" ? resume : (L.phase && String(L.phase).startsWith("STOPPED") ? (L.reason||"session stop") : (modeTxt+" · size "+L.size_mult+"× Kelly · "+bc+"/"+mb));
+  const gCushion = g.to_trigger_usd==null ? "—" : (g.triggered ? "TRIGGERED" : usd(g.to_trigger_usd)+" to trigger");
+  const gSub = g.hwm_equity==null ? "trailing 24h HWM vs equity" : ("HWM "+usd(g.hwm_equity)+" · DD "+spct(g.drawdown_pct_actual,1)+" · trip @ "+usd(g.trigger_equity));
+  return kpi(`Session P&L (${wLabel})`, susd(L.pnl), cls(L.pnl), `start ${usd(L.start_equity)}`)
+    + kpi(`Target +${pct(L.target_pct,2)}`, usd(L.target_equity), L.phase==="TRADING"?"":"cy", `${L.phase==="TRADING"?"to go "+usd(L.target_usd-L.pnl):"hit"} · ${esc((L.target_info||"").split(":")[0])}`)
+    + kpi("Session peak", susd(L.peak_usd), cls(L.peak_usd), `peak equity ${usd(L.peak_equity)}`)
+    + kpi(`Session floor (${pct(S.tick&&S.tick.controls&&S.tick.controls.effective?S.tick.controls.effective.lock_ratio:0.7,0)} of peak)`, L.floor_usd==null?"—":susd(L.floor_usd), L.floor_usd==null?"mut":"amb", L.floor_usd==null?"locks when target is hit":`floor equity ${usd(L.floor_equity)} · cushion ${usd(L.pnl-L.floor_usd)}`)
+    + kpi("Risk phase", esc(ph), (ph==="SESSION STOP"||ph==="HALT")?"neg":(ph==="COOLDOWN"||ph==="LOCKED-HALF")?"amb":"pos", esc(String(phaseSub).slice(0,80)))
+    + kpi("Floor breaches", bc+"/"+mb, bc>=mb?"neg":bc>0?"amb":"", L.phase==="COOLDOWN"?("cooldown · "+resume): (L.phase==="STOPPED_SESSION"?"session stop":"resets at midnight ET"))
+    + kpi("Rolling guard", gCushion, g.triggered?"neg":"mut", gSub);
 }
 function unrealized(){
   const L = S.ledger; let u=0, n=0; if (!L) return {u,n};

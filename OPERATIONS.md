@@ -47,13 +47,22 @@ These live in the **Controls** panel on the Terminal page (versioned, logged, ap
 |---|---|---|---|
 | target_mode | profit_lock | profit_lock / fixed | `fixed` = old behaviour (stop at target) |
 | daily_profit_target_pct | 0.05 | — | initial target (fixed mode, or the base of the adaptive target) |
-| lock_ratio | 0.70 | 0.30–0.95 | floor = ratio × peak daily gain; ratchets up only |
-| locked_size_mult | 0.5 | 0.10–1.0 | Kelly multiplier after the lock |
+| lock_ratio | 0.70 | 0.30–0.95 | floor = ratio × peak *session* gain (from the current segment baseline); ratchets up only |
+| locked_size_mult | 0.5 | 0.10–1.0 | Kelly multiplier after the lock and after each cooldown resume |
 | adaptive_target | true | bool | adapt the target from the last 7 days (needs ≥ 3 days of history) |
 | target_min_pct / target_max_pct | 0.03 / 0.10 | 0.005–0.25 | clamp for the adaptive target |
 | adaptive_lookback_days | 7 | 1–30 | history window |
-| daily_loss_limit_pct | 0.10 | — | hard stop in every mode |
-| window_mode | rolling_24h | rolling_24h / calendar_day | risk window (24h rolling vs midnight ET reset), measured from equity at window start |
+| daily_loss_limit_pct | 0.10 | — | hard session stop in every mode; resets at midnight ET |
+| window_mode | calendar_day | rolling_24h / calendar_day | session window (default midnight ET reset) vs 24h rolling; limits measured from equity at window start |
+| max_breaches | 3 | 1–10 | the Nth floor breach stops the session; breaches 1..N−1 are cooldowns |
+| cooldown_1_min / cooldown_2_min / cooldown_3_min | 60 / 120 / 240 | 1–1440 | minutes paused after breaches 1, 2, …; the last slot is used only if max_breaches is raised |
+| rolling_guard_enabled | true | bool | fail-closed HALT if equity is `rolling_guard_pct` below the trailing-lookback HWM |
+| rolling_guard_pct | 0.10 | 0.02–0.50 | drawdown from the trailing HWM that trips `rolling_drawdown` |
+| rolling_guard_hours | 24 | 1–168 | lookback for the HWM (spans midnight); reset is CLI-only |
+
+After the session target is hit the bot is **LOCKED-HALF** (0.5× Kelly, ratcheting floor). A floor breach starts a **COOLDOWN** (60 min, then 120 min); when it expires the floor is re-armed from current session P&L and peak tracking restarts from there. The 3rd breach (default) is a **SESSION STOP** until midnight ET. Open positions always settle. A trailing-24h 10 % drawdown from the high-water mark is a fail-closed **HALT** (`rolling_drawdown`) on top of the session −10 % loss limit; clear it only with `scripts/reset_halt.sh --yes` after you understand the cause.
+
+Risk-phase badges: `TRADING` / `LOCKED-HALF` / `COOLDOWN` / `SESSION STOP` / `HALT`. Verdicts use the same wording, e.g. "cooldown after floor breach 1/3, resumes 4:15 AM ET".
 | pattern_mode | shadow | off / shadow / active | Bayesian pattern layer (`shadow` logs only; `active` scales Kelly `[0.25×, 1.50×]` and skips EV ≤ −2 %) |
 | pattern_min_samples | 20 | 5–200 | minimum settled trades in a context before pattern scaling/skipping activates |
 

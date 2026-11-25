@@ -187,9 +187,19 @@ def decide(row: dict, up: Optional[dict], down: Optional[dict], *, halted: bool 
     if paused:
         return out("NO TRADE", f"{best_side.upper()} passes rules, but entries paused by operator", "paused")
     if risk_halt:
-        lab = ("profit-lock floor hit" if "floor" in risk_halt else "daily target hit" if "target" in risk_halt
-               else "daily loss limit hit" if "loss" in risk_halt else risk_halt)
-        return out("NO TRADE", f"{best_side.upper()} passes rules, but {lab}: entries paused", "risk_halt")
+        low = risk_halt.lower()
+        if "cooldown" in low or "session stop" in low:
+            lab = risk_halt  # already "cooldown after floor breach 1/3, resumes 4:15 AM ET"
+        elif "target" in low:
+            lab = "daily target hit"
+        elif "loss" in low:
+            lab = "session loss limit hit"
+        elif "floor" in low:
+            lab = risk_halt
+        else:
+            lab = risk_halt
+        suffix = "" if lab == risk_halt and ("cooldown" in low or "session stop" in low) else ": entries paused"
+        return out("NO TRADE", f"{best_side.upper()} passes rules, but {lab}{suffix}", "risk_halt")
     if holding:
         return out("HOLD", "already holding this market", "holding")
     if at_max_positions:

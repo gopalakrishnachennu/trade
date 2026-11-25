@@ -180,8 +180,8 @@ class Config:
 
     @property
     def window_mode(self) -> str:
-        v = str(_get(self.raw, "risk", "window_mode", default="rolling_24h"))
-        return v if v in ("rolling_24h", "calendar_day") else "rolling_24h"
+        v = str(_get(self.raw, "risk", "window_mode", default="calendar_day"))
+        return v if v in ("rolling_24h", "calendar_day") else "calendar_day"
 
     @property
     def window_hours(self) -> float:
@@ -245,6 +245,36 @@ class Config:
     @property
     def adaptive_min_days(self) -> int:
         return int(_get(self.raw, "risk", "profit_lock", "min_days", default=3))
+
+    @property
+    def max_breaches(self) -> int:
+        return max(1, int(_get(self.raw, "risk", "profit_lock", "max_breaches", default=3)))
+
+    @property
+    def cooldown_minutes(self) -> tuple[int, ...]:
+        raw = (self.raw.get("risk") or {}).get("profit_lock") or {}
+        has_parts = any(k in raw for k in ("cooldown_1_min", "cooldown_2_min", "cooldown_3_min"))
+        if has_parts:
+            c1 = int(raw.get("cooldown_1_min", 60) or 60)
+            c2 = int(raw.get("cooldown_2_min", 120) or 120)
+            c3 = int(raw.get("cooldown_3_min", 240) or 240)
+            return (max(1, c1), max(1, c2), max(1, c3))
+        lst = raw.get("cooldown_minutes")
+        if isinstance(lst, (list, tuple)) and lst:
+            return tuple(max(1, int(x)) for x in lst)
+        return (60, 120, 240)
+
+    @property
+    def rolling_guard_enabled(self) -> bool:
+        return bool(_get(self.raw, "risk", "rolling_guard", "enabled", default=True))
+
+    @property
+    def rolling_guard_pct(self) -> float:
+        return float(_get(self.raw, "risk", "rolling_guard", "drawdown_pct", default=0.10))
+
+    @property
+    def rolling_guard_hours(self) -> float:
+        return max(1.0, float(_get(self.raw, "risk", "rolling_guard", "lookback_hours", default=24.0)))
 
     @property
     def starting_day_equity(self) -> float:

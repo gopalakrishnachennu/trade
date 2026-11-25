@@ -11,7 +11,57 @@ from .models import PaperOrder
 from .store import Store
 
 
-def window_start_ts(now: float, tz_name: str, window_mode: str = "rolling_24h", window_hours: float = 24.0) -> float:
+
+def trailing_hwm_state(
+    all_settles: list,
+    starting_cash: float,
+    now: float,
+    lookback_hours: float = 24.0,
+    drawdown_pct: float = 0.10,
+) -> dict:
+    """Current equity vs the high-water mark inside the trailing lookback.
+
+    The HWM is the max of (equity at the start of the lookback, equity after
+    every settlement in (now-lookback, now]). A recovered historical dip does
+    not trip; only current equity vs that HWM does. Trip is fail-closed
+    (current + 1e-9 <= HWM * (1 - drawdown_pct)).
+    """
+    now_ts = float(now)
+    cutoff = now_ts - max(1.0, float(lookback_hours)) * 3600.0
+    ordered = sorted(((float(ts), float(pnl)) for ts, pnl in (all_settles or [])), key=lambda x: x[0])
+    eq = float(starting_cash)
+    for ts, pnl in ordered:
+        if ts < cutoff:
+            eq += pnl
+        else:
+            break
+    hwm = eq
+    hwm_ts = cutoff
+    for ts, pnl in ordered:
+        if ts < cutoff or ts > now_ts:
+            continue
+        eq += pnl
+        if eq > hwm + 1e-12:
+            hwm, hwm_ts = eq, ts
+    current = float(starting_cash) + sum(pnl for ts, pnl in ordered if ts <= now_ts)
+    trigger = hwm * (1.0 - float(drawdown_pct))
+    triggered = hwm > 0 and current + 1e-9 <= trigger
+    return {
+        "enabled": True,
+        "lookback_hours": float(lookback_hours),
+        "drawdown_pct": float(drawdown_pct),
+        "hwm_equity": round(hwm, 2),
+        "hwm_ts": hwm_ts,
+        "equity": round(current, 2),
+        "drawdown_usd": round(current - hwm, 2),
+        "drawdown_pct_actual": round((current - hwm) / hwm, 6) if hwm else 0.0,
+        "trigger_equity": round(trigger, 2),
+        "to_trigger_usd": round(current - trigger, 2),
+        "triggered": triggered,
+    }
+
+
+def window_start_ts(now: float, tz_name: str, window_mode: str = "calendar_day", window_hours: float = 24.0) -> float:
     """Start timestamp (unix seconds) for the active risk window."""
     if window_mode == "calendar_day":
         tz = ZoneInfo(tz_name)
@@ -55,7 +105,7 @@ class RiskManager:
         ws = window_start_ts(
             now_ts,
             tz_name,
-            getattr(self.cfg, "window_mode", "rolling_24h"),
+            getattr(self.cfg, "window_mode", "calendar_day"),
             getattr(self.cfg, "window_hours", 24.0),
         )
         base = state.starting_cash if state.starting_cash is not None else self.cfg.starting_cash
@@ -74,9 +124,15 @@ class RiskManager:
             gap = state.realized_pnl - sum(x[1] for x in settles)
             if abs(gap) > 1e-6:
                 settles.append((max([time.time()] + [x[0] for x in settles]), gap))
-        st = pl.evaluate(params, state.starting_day_equity, settles, tpct, info)
+        if now is not None:
+            now_ts = float(now)
+        elif state.all_settles is not None:
+            now_ts = time.time()
+        else:
+            now_ts = None  # legacy unit tests: evaluate as-of the last settlement
+        st = pl.evaluate(params, state.starting_day_equity, settles, tpct, info, now=now_ts)
         if state.all_settles is not None:
-            wmode = getattr(self.cfg, "window_mode", "rolling_24h")
+            wmode = getattr(self.cfg, "window_mode", "calendar_day")
             whrs = getattr(self.cfg, "window_hours", 24.0)
             wlab = f"rolling {whrs:g}h" if wmode == "rolling_24h" else "calendar day ET"
             st.target_info = f"{st.target_info} · {wlab}" if st.target_info else wlab

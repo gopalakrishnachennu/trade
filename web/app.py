@@ -133,28 +133,50 @@ def _bus_latch():
     return Bus(RUNTIME), HaltLatch(RUNTIME / "HALT.json")
 
 
+def _risk_overlay(lock: dict, guard: dict) -> dict:
+    return {
+        "phase": lock.get("display_phase") or lock.get("phase"),
+        "raw_phase": lock.get("phase"),
+        "breach_count": lock.get("breach_count"),
+        "max_breaches": lock.get("max_breaches"),
+        "floor_usd": lock.get("floor_usd"),
+        "peak_usd": lock.get("peak_usd"),
+        "cooldown_until": lock.get("cooldown_until"),
+        "resume_et": lock.get("resume_et"),
+        "size_mult": lock.get("size_mult"),
+        "rolling_guard": guard or None,
+    }
+
+
 def risk_state(system: str, system_reason: str, halt: dict, pnl: dict, controls: dict) -> dict:
-    if halt.get("halted"):
-        return {"state": "HALTED", "reason": system_reason or halt.get("reason") or "halted"}
-    if system == "STALE":
-        return {"state": "STALE", "reason": f"data stale: {system_reason}"}
-    rh = pnl.get("risk_halt")
     lock = pnl.get("lock") or {}
-    if rh and "floor" in rh:
-        return {"state": "LOCK STOP", "reason": f"{rh}; new entries paused for window, opens settle normally"}
-    if rh and "target" in rh:
-        return {"state": "TARGET HIT", "reason": f"{rh}; new entries blocked, opens settle normally"}
-    if rh and "loss" in rh:
-        return {"state": "LOSS LIMIT", "reason": f"{rh}; new entries blocked, opens settle normally"}
+    guard = pnl.get("rolling_guard") or {}
+    overlay = _risk_overlay(lock, guard)
+    if halt.get("halted"):
+        return {"state": "HALT", "reason": system_reason or halt.get("reason") or "halted", **overlay}
+    if system == "STALE":
+        return {"state": "STALE", "reason": f"data stale: {system_reason}", **overlay}
+    rh = pnl.get("risk_halt")
+    phase = lock.get("phase") or ""
+    if phase == "COOLDOWN" or (rh and "cooldown" in str(rh)):
+        return {"state": "COOLDOWN", "reason": rh or lock.get("reason") or "cooldown", **overlay}
+    if phase in ("STOPPED_SESSION", "STOPPED_LOSS", "STOPPED_TARGET", "STOPPED_FLOOR") or (
+        rh and any(s in str(rh) for s in ("session stop", "loss limit", "profit target", "floor hit"))
+    ):
+        return {"state": "SESSION STOP", "reason": f"{rh or lock.get('reason')}; new entries blocked for the rest of the session, opens settle normally", **overlay}
     if rh:
-        return {"state": "BLOCKED", "reason": rh}
+        return {"state": "SESSION STOP", "reason": rh, **overlay}
     if ctl.paused(controls):
-        return {"state": "PAUSED", "reason": "new entries paused by operator"}
-    if lock.get("phase") == "LOCKED":
-        return {"state": "PROFIT LOCK", "reason": (f"target +${lock.get('target_usd', 0):.2f} hit; floor +${lock.get('floor_usd') or 0:.2f} "
-                f"locked ({lock.get('peak_usd', 0) and round(100 * (lock.get('floor_usd') or 0) / lock['peak_usd'])}% of peak +${lock.get('peak_usd', 0):.2f}); "
-                f"trading at {lock.get('size_mult', 1):g}x size")}
-    return {"state": "TRADING", "reason": "entries allowed when a market passes every rule"}
+        return {"state": "PAUSED", "reason": "new entries paused by operator", **overlay}
+    if phase == "LOCKED":
+        bc = lock.get("breach_count") or 0
+        mb = lock.get("max_breaches") or 3
+        return {"state": "LOCKED-HALF", "reason": (
+            f"session target +${lock.get('target_usd', 0):.2f} hit; floor +${lock.get('floor_usd') or 0:.2f} "
+            f"locked ({lock.get('peak_usd', 0) and round(100 * (lock.get('floor_usd') or 0) / lock['peak_usd'])}% of peak +${lock.get('peak_usd', 0):.2f}); "
+            f"trading at {lock.get('size_mult', 1):g}× Kelly; breaches {bc}/{mb}"
+        ), **overlay}
+    return {"state": "TRADING", "reason": "entries allowed when a market passes every rule", **overlay}
 
 
 class EdgeTail:

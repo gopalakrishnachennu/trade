@@ -122,12 +122,13 @@ class TestRiskWindowAndRollover(unittest.TestCase):
             self.assertIsNone(st_cal.kill_reason)
             self.assertIsNone(rm_cal.allow(st_cal, "btc-updown-15m-next", 20.0, cash_cal, now=t_mid))
 
-            # 2) rolling_24h mode: at 00:01 ET Nov 25, Nov 24 23:00-23:30 trades are still in the 24h window -> locked/stopped
+            # 2) rolling_24h mode: at 00:01 ET Nov 25 the 23:30 floor breach is still inside the 24h
+            # window and inside the 60-minute cooldown (until 00:30 ET) -> COOLDOWN, entries blocked
             rm_roll = risk.RiskManager(cfg_roll)
             t_0001 = datetime(2026, 11, 25, 0, 1, tzinfo=ET).timestamp()
             st_roll, cash_roll = risk.restore_state(cfg_roll, db, rm_roll, now=t_0001)
             lk = rm_roll.lock_state(st_roll, now=t_0001)
-            self.assertEqual(lk.phase, "STOPPED_FLOOR")
+            self.assertEqual(lk.phase, "COOLDOWN")
             self.assertIsNotNone(st_roll.kill_reason)
             self.assertIsNotNone(rm_roll.allow(st_roll, "btc-updown-15m-next", 20.0, cash_roll, now=t_0001))
 
