@@ -44,3 +44,5 @@ Breaking any of these needs an explicit decision from the owner, written down he
     - `compose_learning` takes the minimum of the active multipliers; any active skip sets `passed=False` (a zero multiplier is not used, because `size_order` floors `pattern_mult` at 0.25).
     - Every learning layer is switchable `off` / `shadow` / `active` from versioned Controls without a redeploy. Defaults are `shadow`.
     - The rule DSL allowlists context feature fields only.
+
+13b. **Learning auto-demote.** Active analyst rules and the pattern layer must revert to shadow if they underperform the shadow champion by more than the configured margin over 20+ trades, or if a profit-lock floor breach is attributable to a pattern size-up. Auto-demote cannot raise caps, clear a HALT, or switch the bot out of paper mode.

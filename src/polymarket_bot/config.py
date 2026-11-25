@@ -192,6 +192,35 @@ class Config:
         v = str(_get(self.raw, "patterns", "mode", default="shadow"))
         return v if v in ("shadow", "active", "off") else "shadow"
 
+    def pattern_modes_by_strategy(self) -> dict[str, str]:
+        raw = _get(self.raw, "patterns", "by_strategy", default={}) or {}
+        out: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                m = str(v or "")
+                if m in ("shadow", "active", "off"):
+                    out[str(k)] = m
+        return out
+
+    def pattern_mode_for(self, strategy: str | None = None) -> str:
+        """Effective pattern mode for a strategy. Falls back to the global mode."""
+        global_m = self.pattern_mode
+        if not strategy:
+            return global_m
+        return self.pattern_modes_by_strategy().get(str(strategy), global_m)
+
+    @property
+    def pattern_auto_demote(self) -> bool:
+        return bool(_get(self.raw, "patterns", "auto_demote", default=True))
+
+    @property
+    def pattern_demote_min_trades(self) -> int:
+        return max(5, int(_get(self.raw, "patterns", "demote_min_trades", default=20)))
+
+    @property
+    def pattern_demote_margin_usd(self) -> float:
+        return max(0.0, float(_get(self.raw, "patterns", "demote_margin_usd", default=20.0)))
+
     @property
     def pattern_min_samples(self) -> int:
         return max(5, int(_get(self.raw, "patterns", "min_samples", default=20)))
@@ -256,6 +285,18 @@ class Config:
     @property
     def rules_lab_min_trades(self) -> int:
         return max(5, int(_get(self.raw, "rules_lab", "min_shadow_trades", default=30)))
+
+    @property
+    def rules_lab_demote_min_trades(self) -> int:
+        return max(5, int(_get(self.raw, "rules_lab", "demote_min_trades", default=20)))
+
+    @property
+    def rules_lab_demote_margin_usd(self) -> float:
+        return max(0.0, float(_get(self.raw, "rules_lab", "demote_margin_usd", default=20.0)))
+
+    @property
+    def rules_lab_demote_on_floor_breach(self) -> bool:
+        return bool(_get(self.raw, "rules_lab", "demote_on_floor_breach", default=True))
 
     # ---- dynamic profit target (risk.profit_lock)
     @property

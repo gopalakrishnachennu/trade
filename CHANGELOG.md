@@ -2,6 +2,13 @@
 
 All times ET.
 
+## 2026-11-25 (05:10+) — Activate verified rules; per-strategy pattern; safety demotion
+
+- Manually activated the walk-forward-verified skip rules (`skip-mid-prob-0.4-0.5`, `skip-mom-window-chop`, `skip-15m-against-mom-1m`, and `skip-late-chop` if it still beat the gate). They run in `rules_lab.mode=active`. Auto-promote stays **off**. Bandit and calibration stay **shadow**. Hard caps and HALT invariants are unchanged (paper only).
+- Pattern layer is now **per-strategy**: `high_conviction` and `favorite` are `active`; `baseline` stays `shadow` (small P&L lift, worse drawdown); `late_window` stays `shadow` (P&L collapsed). Global `patterns.mode` remains `shadow`.
+- Automatic safety demotion: if an active rule or the pattern layer underperforms its shadow champion by more than `demote_margin_usd` (default $20) over `demote_min_trades` (default 20) trades, it is reverted to shadow and logged. A profit-lock floor breach caused by a pattern size-up also reverts pattern to shadow.
+- `scripts/replay.py` prints a fee-aware **combined vs previous** walk-forward (entry-time features + active rules + per-strategy pattern).
+
 ## 2026-11-25 (04:20+) — Entry-time path features and analyst shadow rules
 
 - Added **entry-time** path features, computed only from index ticks at or before the decision: `mom_1m`, `mom_3m`, `mom_window` (log return in σ units, signed so + means the move agrees with the bet side), `strike_cross_count`, and `drift_dir` / `signed_drift` (index vs strike). These are the actionable versions of the hindsight “against trend” / “last-minute flip” labels.

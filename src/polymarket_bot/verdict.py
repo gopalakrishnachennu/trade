@@ -99,6 +99,11 @@ def describe_check(chk: dict) -> dict:
         out["threshold"] = str(chk.get("threshold") or "—")
         out["reason"] = None if passed else (chk.get("detail") or "pattern EV skip")
         out["code"] = "pattern_skip" if not passed else "pattern"
+    elif name in ("rule", "bandit", "calibration"):
+        out["value"] = str(chk.get("value") or "—")
+        out["threshold"] = str(chk.get("threshold") or "—")
+        out["reason"] = None if passed else (chk.get("detail") or f"{name} skip")
+        out["code"] = f"{name}_skip" if not passed else name
     else:
         out["reason"] = None if passed else (chk.get("detail") or name)
     return out

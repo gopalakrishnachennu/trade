@@ -37,6 +37,10 @@ from polymarket_bot import patterns as pat  # noqa: E402
 from polymarket_bot import strategies as strat  # noqa: E402
 from polymarket_bot import calibration as cal  # noqa: E402
 from polymarket_bot import bandit as ban  # noqa: E402
+from polymarket_bot import rules_lab as rl  # noqa: E402
+from polymarket_bot.bandit import compose_learning  # noqa: E402
+from polymarket_bot.calibration import unit_pnl  # noqa: E402
+from polymarket_bot.config import load_config  # noqa: E402
 from polymarket_bot.analytics import DEFAULT_TZ, ts_unix  # noqa: E402
 from polymarket_bot.profit_lock import LockParams, evaluate as eval_lock  # noqa: E402
 from polymarket_bot.risk import trailing_hwm_state, window_start_ts  # noqa: E402
@@ -456,6 +460,102 @@ def run_bandit_walkforward(
     }
 
 
+
+def run_combined_walkforward(
+    name: str,
+    rows: list[dict],
+    outcome: dict[str, str],
+    settle_ts_map: dict[str, float],
+    *,
+    stake: float,
+    min_edge: float,
+    pattern_mode: str,
+    min_samples: int,
+    prior_strength: float,
+    skip_ev_threshold: float,
+    rules: list[dict] | None = None,
+    theta: float = 0.095,
+    tz_name: str = DEFAULT_TZ,
+    use_fees: bool = True,
+) -> dict:
+    """Walk-forward of one strategy with optional active pattern + skip rules (fee-aware)."""
+    store = pat.PatternStore(prior_strength=prior_strength)
+    paths = pat.paths_from_eval_rows(rows, tz_name)
+    taken = set()
+    pending: list[tuple[float, dict]] = []
+    pnls: list[float] = []
+    wins = 0
+    skipped_pattern = 0
+    skipped_rules = 0
+
+    def flush_until(t_now: float) -> None:
+        nonlocal pending
+        still, ready = [], []
+        for s_ts, rec in pending:
+            (ready if s_ts <= t_now else still).append((s_ts, rec))
+        ready.sort(key=lambda x: x[0])
+        for _, rec in ready:
+            store.update_trade(rec["feats"], order_id=rec["order_id"], pnl_usd=rec["pnl_usd"],
+                               cost_usd=rec["cost_usd"], outcome=rec["outcome"])
+        pending = still
+
+    for i, r in enumerate(rows):
+        t_row = ts_unix(r.get("ts"), tz_name)
+        if t_row is None:
+            continue
+        flush_until(t_row)
+        slug = r.get("market_slug") or ""
+        side = r.get("side") or ""
+        key = (slug, side)
+        if key in taken or slug not in outcome:
+            continue
+        ok, _ = strat.evaluate(name, None, to_sig(r, min_edge), min_edge)
+        if not ok:
+            continue
+        taken.add(key)
+        ask = f(r.get("ask"))
+        if not ask or ask <= 0 or ask >= 1:
+            continue
+        sr = f(r.get("seconds_remaining")) or 0.0
+        s_ts = settle_ts_map.get(slug) or (t_row + sr)
+        feats = pat.extract_features(r, ts=t_row, tz_name=tz_name, strategy=name, ticks=paths.get(slug) or [])
+        dec = store.evaluate(feats, mode=pattern_mode, min_samples=min_samples,
+                             skip_ev_threshold=skip_ev_threshold)
+        rule_dec = rl.apply_active_rules(rules or [], feats)
+        composed = compose_learning(dec, None, rule_dec, pattern_mode=pattern_mode,
+                                    bandit_mode="off", rules_mode="active" if rules else "off")
+        if not composed.get("passed", True):
+            if not dec.get("passed", True) and pattern_mode == "active":
+                skipped_pattern += 1
+            if not rule_dec.get("passed", True):
+                skipped_rules += 1
+            continue
+        won = outcome[slug] == side
+        m = float(composed.get("mult") or 1.0)
+        if use_fees:
+            pnl, cost, _fee = unit_pnl(ask, won, theta=theta, stake=stake * m)
+        else:
+            cost = stake * m
+            pnl = cost * (1.0 / ask - 1.0) if won else -cost
+        pnls.append(pnl)
+        if won:
+            wins += 1
+        pending.append((s_ts, {
+            "feats": feats, "order_id": f"comb-{name}-{i}",
+            "outcome": "win" if won else "loss", "pnl_usd": pnl, "cost_usd": cost,
+        }))
+    flush_until(float("inf"))
+    n = len(pnls)
+    tot = sum(pnls)
+    pf, dd = _pf_and_dd(pnls)
+    return {
+        "strategy": name, "pattern_mode": pattern_mode, "trades": n, "wins": wins,
+        "win_rate": (wins / n) if n else 0.0, "pnl": tot, "avg": (tot / n) if n else 0.0,
+        "pf": pf, "max_dd": dd, "skipped_pattern": skipped_pattern, "skipped_rules": skipped_rules,
+        "candidates": len(taken),
+    }
+
+
 def print_calibration(rows, outcome, settle_ts_map, *, theta: float, stake: float, tz_name: str = DEFAULT_TZ) -> dict:
     examples = cal.iter_counterfactuals(rows, outcome, settle_ts_map, tz_name=tz_name, theta=theta, stake=stake)
     # only fully settled, walk-forward (all historical rows whose window ended)
@@ -489,6 +589,8 @@ def main(argv=None):
     ap.add_argument("--min-samples", type=int, default=20)
     ap.add_argument("--prior-strength", type=float, default=10.0)
     ap.add_argument("--skip-ev-threshold", type=float, default=-0.02)
+    ap.add_argument("--data", default="data", help="data dir (rules-lab queue, config overlay)")
+    ap.add_argument("--config", default="config.yaml")
     a = ap.parse_args(argv)
 
     paths = list(a.csv)
@@ -532,6 +634,52 @@ def main(argv=None):
     print(f"(calendar_day sessions, ${a.stake:.2f} stake, pattern off, rolling 24h 10% HWM HALT on)\n")
     print(f"{'strategy':16} {'policy':10} {'trades':>6} {'wins':>5} {'win%':>6} {'pnl':>9} {'PF':>6} {'maxDD':>8} "
           f"{'blocked':>7} {'cd':>5} {'stop':>5} {'halts':>5} {'@half':>5}")
+    # Combined active config vs previous (fee-aware): per-strategy pattern + active rules.
+    # Bandit and calibration stay off/shadow here (they were fee-negative).
+    try:
+        cfg = load_config(a.config)
+    except Exception:
+        cfg = None
+    data_dir = Path(a.data)
+    rules = []
+    try:
+        rules = rl.active_rules(data_dir)
+    except Exception:
+        rules = []
+    by_s = cfg.pattern_modes_by_strategy() if cfg is not None else {}
+    print("\nCombined config vs previous (fee-aware unit P&L, entry-time features, zero lookahead)")
+    print(f"  active rules: {len(rules)} ({', '.join(r.get('name') or r.get('id') or '?' for r in rules) or 'none'})")
+    print(f"  pattern by_strategy: {by_s or '— (global only)'}")
+    print(f"{'strategy':16} {'config':12} {'trades':>6} {'wins':>5} {'win%':>6} {'pnl':>9} {'PF':>6} {'maxDD':>8}  skips(pat/rule)")
+    for name in strat.names():
+        prev = run_combined_walkforward(
+            name, rows, outcome, settle_ts_map,
+            stake=a.stake, min_edge=a.min_edge, pattern_mode="off",
+            min_samples=a.min_samples, prior_strength=a.prior_strength,
+            skip_ev_threshold=a.skip_ev_threshold, rules=[], theta=0.095,
+        )
+        pmode = (by_s.get(name) if by_s else None) or "off"
+        if pmode not in ("shadow", "active", "off"):
+            pmode = "off"
+        # shadow pattern does not change the book; treat as off for the live replay of the main book
+        live_p = pmode if pmode == "active" else "off"
+        comb = run_combined_walkforward(
+            name, rows, outcome, settle_ts_map,
+            stake=a.stake, min_edge=a.min_edge, pattern_mode=live_p,
+            min_samples=a.min_samples, prior_strength=a.prior_strength,
+            skip_ev_threshold=a.skip_ev_threshold, rules=rules, theta=0.095,
+        )
+        def _line(tag, res):
+            print(f"{res['strategy']:16} {tag:12} {res['trades']:6d} {res['wins']:5d} {res['win_rate']*100:5.1f}% "
+                  f"{res['pnl']:+9.2f} {res['pf']:>6} {res['max_dd']:+8.2f}  "
+                  f"{res['skipped_pattern']:4d}/{res['skipped_rules']:<4d}")
+        _line("previous", prev)
+        _line("combined", comb)
+        d_tr = comb["trades"] - prev["trades"]
+        d_pnl = comb["pnl"] - prev["pnl"]
+        d_dd = comb["max_dd"] - prev["max_dd"]
+        print(f"{'':16} {'Δ':12} {d_tr:+6d} {'':5} {'':6} {d_pnl:+9.2f} {'':6} {d_dd:+8.2f}")
+
     for name in strat.names():
         for policy in ("sticky", "cooldown"):
             res = run_risk_walkforward(

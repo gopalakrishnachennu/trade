@@ -100,6 +100,18 @@ patterns:
   # active = enforce skips for confidently negative EV contexts and scale Kelly [0.25x, 1.50x]
   # off    = kill switch (pattern layer disabled)
   mode: shadow
+  # Per-strategy overrides (fall back to mode). Applied on the live book when
+  # that strategy is active, and in the strategy lab books. late_window is
+  # never activated here: walk-forward P&L collapsed. baseline stays shadow
+  # because the P&L lift is small and drawdown worsens.
+  by_strategy:
+    high_conviction: active
+    favorite: active
+    baseline: shadow
+    late_window: shadow
+  auto_demote: true
+  demote_min_trades: 20
+  demote_margin_usd: 20.0
   min_samples: 20
   prior_strength: 10.0
   min_mult: 0.25
@@ -120,3 +132,6 @@ rules_lab:
   auto_promote: false
   auto_demote: true
   min_shadow_trades: 30
+  demote_min_trades: 20
+  demote_margin_usd: 20.0
+  demote_on_floor_breach: true

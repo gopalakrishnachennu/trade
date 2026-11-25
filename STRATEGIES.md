@@ -90,3 +90,7 @@ Analyst (human or agent) rule proposals are **not** a new strategy and do not re
 ## Entry-time path features
 
 `mom_1m`, `mom_3m`, `mom_window` (σ-units, signed with the bet side), `strike_cross_count`, and `drift_dir` / `signed_drift` are computed from index ticks at or before the decision only. They can be used in rules-lab proposals. Hindsight labels such as last-minute flip are not in the DSL.
+
+## Per-strategy pattern mode
+
+`patterns.by_strategy` overrides the global `patterns.mode` for one strategy (`shadow` / `active` / `off`). Live book uses the mode for the **active** strategy. Defaults: `favorite` and `high_conviction` active; `baseline` and `late_window` shadow. Bandit and calibration stay shadow. Active skip rules and the pattern layer auto-demote back to shadow if they underperform the shadow champion by more than `$20` over 20+ trades, or if a floor breach is caused by a pattern size-up.

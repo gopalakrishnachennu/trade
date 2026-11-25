@@ -377,20 +377,23 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                 sd = signal_to_dict(s)
                 base_checks = list(sd.get("rule_checks") or [])
                 passed, checks = strat.evaluate(act["active"], act["params"], sd, eff.min_edge)
+                passed_base = bool(passed)
                 feat = pat.extract_features(
                     sd, ts=now_unix, tz_name=tz, cfg=eff, strategy=act["active"],
                     ticks=hist.get(s.asset) or hist.get((s.asset or "").lower()) or [],
                 )
                 layer = learn.decisions_for(feat, eff, pstore, bholder[0], data_dir, record_shadow=False)
                 pdec, bdec, rdec, composed = layer["pattern"], layer["bandit"], layer["rule"], layer["composed"]
+                p_mode = eff.pattern_mode_for(act["active"]) if hasattr(eff, "pattern_mode_for") else eff.pattern_mode
                 if checks is not None:
                     checks = list(checks)
-                    if eff.pattern_mode != "off":
+                    if p_mode != "off":
                         ev_str = "—" if pdec["post_ev"] is None else f"{pdec['post_ev']:+.1%}"
                         checks.append({
-                            "name": "pattern", "passed": pdec["passed"], "detail": pdec["detail"],
+                            "name": "pattern", "passed": pdec["passed"] if p_mode == "active" else True,
+                            "detail": pdec["detail"],
                             "value": f"{ev_str} ({pdec['would_mult']:.2f}×, n={pdec['n']})",
-                            "threshold": f"n≥{eff.pattern_min_samples} · {eff.pattern_mode}",
+                            "threshold": f"n≥{eff.pattern_min_samples} · {p_mode}",
                         })
                     if getattr(eff, "bandit_mode", "off") != "off":
                         checks.append({
@@ -399,7 +402,7 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                             "value": f"{bdec.get('would_action')} ({bdec.get('would_mult')}×) · {eff.bandit_mode}",
                             "threshold": "Thompson · fee-aware ROI",
                         })
-                    if getattr(eff, "rules_lab_mode", "off") != "off" and rdec.get("detail"):
+                    if getattr(eff, "rules_lab_mode", "off") != "off":
                         checks.append({
                             "name": "rule", "passed": rdec.get("passed", True) if eff.rules_lab_mode == "active" else True,
                             "detail": rdec.get("detail"),
@@ -414,7 +417,7 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                             "value": None if cal_info.get("cal_p") is None else f"{cal_info['cal_p']:.3f}",
                             "threshold": f"{eff.calibration_mode} · tighten-only",
                         })
-                    if eff.pattern_mode == "active" and not pdec["passed"]:
+                    if p_mode == "active" and not pdec["passed"]:
                         passed = False
                     if eff.bandit_mode == "active" and not bdec.get("passed", True):
                         passed = False
@@ -431,6 +434,20 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                     sd["reasons"] = [c.get("detail") or c.get("name") for c in checks if not c.get("passed")]
                 elif not composed.get("passed", True) and composed.get("detail"):
                     sd["reasons"] = list(sd.get("reasons") or []) + [composed["detail"]]
+                    if passed_base:
+                        try:
+                            learn.note_skip(
+                                data_dir, feat, layer,
+                                window_end=getattr(s, "window_end", None) or sd.get("window_end"),
+                                ask=getattr(s, "ask", None), side=getattr(s, "side", None),
+                                slug=getattr(s, "market_slug", None),
+                                strike=getattr(s, "price_to_beat", None) or sd.get("price_to_beat"),
+                                asset=getattr(s, "asset", None),
+                                contracts=float(getattr(eff, "max_contracts", 25) or 25),
+                                theta=float(getattr(eff, "fee_theta", 0.095) or 0.095),
+                            )
+                        except Exception:
+                            pass
                 return sd
             for asset in cfg.assets:
                 for horizon in cfg.horizons:
@@ -654,9 +671,11 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                                cost_usd=cost, outcome=order.result or ("win" if order.pnl_usd > 0 else "loss")):
             pat.save_pattern_store(data_dir, pstore)
         try:
-            learn.on_settlement(order, feat_rec, {"pattern": pdec, "bandit": (pdec or {}).get("_bandit"),
+            tagged = learn.on_settlement(order, feat_rec, {"pattern": pdec, "bandit": (pdec or {}).get("_bandit"),
                                                    "composed": (pdec or {}).get("_composed")},
-                                executor.cfg, store, pstore, bstore, data_dir)
+                                executor.cfg, store, pstore, bstore, data_dir) or {}
+            for ev in tagged.get("_demote_events") or []:
+                bus.event("demote", "execution", ev.get("message") or ev.get("event") or "auto-demote")
         except Exception:
             pass
 
@@ -744,11 +763,34 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             }
             # Settle always (even while halted) so open paper P&L can close.
             try:
+                breaches_before = int(getattr(risk.lock_state(state, now=time.time()), "breach_count", 0) or 0)
                 for o in executor.settle_due(markets, price_map):
+                    saved = open_features.get(o.id)
                     record_settled_pattern(o)
                     bus.event("settle", "execution",
                               f"SETTLED {o.side.upper()} {o.asset.upper()} {o.horizon} {o.result} pnl ${o.pnl_usd:+.2f}",
                               pnl=o.pnl_usd, slug=o.market_slug, result=o.result)
+                    try:
+                        after = risk.lock_state(state, now=time.time())
+                        if int(getattr(after, "breach_count", 0) or 0) > breaches_before:
+                            feat_b, pdec_b = saved if isinstance(saved, tuple) else (None, None)
+                            evs = learn.on_floor_breach(
+                                o, feat_b or {},
+                                {"pattern": pdec_b or {}, "composed": (pdec_b or {}).get("_composed")},
+                                executor.cfg, data_dir,
+                            ) or []
+                            for ev in evs:
+                                bus.event("demote", "execution", ev.get("message") or ev.get("event") or "auto-demote")
+                            breaches_before = int(after.breach_count or 0)
+                    except Exception:
+                        pass
+                try:
+                    for ev in learn.settle_pending_skips(
+                        data_dir, executor.cfg, now=time.time(), markets=markets, prices=price_map,
+                    ) or []:
+                        bus.event("demote", "execution", ev.get("message") or ev.get("event") or "auto-demote")
+                except Exception:
+                    pass
             except Exception as e:
                 latch.trip("exception", "execution", f"settle: {e}")
                 bus.event("halt", "execution", str(e))

@@ -63,6 +63,8 @@ These live in the **Controls** panel on the Terminal page (versioned, logged, ap
 After the session target is hit the bot is **LOCKED-HALF** (0.5× Kelly, ratcheting floor). A floor breach starts a **COOLDOWN** (60 min, then 120 min); when it expires the floor is re-armed from current session P&L and peak tracking restarts from there. The 3rd breach (default) is a **SESSION STOP** until midnight ET. Open positions always settle. A trailing-24h 10 % drawdown from the high-water mark is a fail-closed **HALT** (`rolling_drawdown`) on top of the session −10 % loss limit; clear it only with `scripts/reset_halt.sh --yes` after you understand the cause.
 
 Risk-phase badges: `TRADING` / `LOCKED-HALF` / `COOLDOWN` / `SESSION STOP` / `HALT`. Verdicts use the same wording, e.g. "cooldown after floor breach 1/3, resumes 4:15 AM ET".
+| pattern_mode / pattern_mode_<strategy> | shadow (baseline, late_window); active (favorite, high_conviction) | off / shadow / active | global default plus per-strategy override |
+| rules_lab_mode | shadow (set `active` when verified rules are approved) | off / shadow / active | only `active` rules in the queue change entries |
 | pattern_mode | shadow | off / shadow / active | Bayesian pattern layer (`shadow` logs only; `active` scales Kelly `[0.25×, 1.50×]` and skips EV ≤ −2 %) |
 | pattern_min_samples | 20 | 5–200 | minimum settled trades in a context before pattern scaling/skipping activates |
 

@@ -48,6 +48,9 @@ DEFAULT_GATE = {
     "dd_slack_usd": 1.0,
     "auto_promote": False,
     "auto_demote": True,
+    "demote_min_trades": 20,
+    "demote_margin_usd": 20.0,
+    "demote_on_floor_breach": True,
 }
 
 
@@ -487,14 +490,22 @@ def tick_lifecycle(data_dir: Path, settings: Optional[dict] = None) -> list[dict
                 append_history(data_dir, {"event": "auto_promoted", "id": pid})
                 events.append({"id": pid, "event": "auto_promoted"})
         elif p.get("status") == "active" and s.get("auto_demote"):
-            # Demote if we have enough trades and P&L is worse with worse-or-equal dd miss
-            if int(book.get("trades") or 0) >= int(s["min_trades"]):
+            # Demote if enough live trades and the rule underperforms the shadow
+            # champion by more than demote_margin_usd (default 20).
+            min_t = int(s.get("demote_min_trades") or 20)
+            margin = float(s.get("demote_margin_usd") or 0.0)
+            if int(book.get("trades") or 0) >= min_t:
                 g = evaluate_gate(book, s)
                 update_proposal(data_dir, pid, gate=g)
-                if not g["passed"] and (float(book.get("pnl") or 0) < float(book.get("champ_pnl") or 0)):
+                delta = float(book.get("pnl") or 0) - float(book.get("champ_pnl") or 0)
+                if delta < -abs(margin):
                     update_proposal(data_dir, pid, status="demoted")
-                    append_history(data_dir, {"event": "auto_demoted", "id": pid, "delta_pnl": g.get("delta_pnl")})
-                    events.append({"id": pid, "event": "auto_demoted"})
+                    append_history(data_dir, {
+                        "event": "auto_demoted", "id": pid, "delta_pnl": round(delta, 2),
+                        "reason": f"underperformed champion by {-delta:.2f} over {book.get('trades')} trades (margin {margin:g})",
+                    })
+                    events.append({"id": pid, "event": "auto_demoted", "delta_pnl": round(delta, 2),
+                                   "reason": "underperform"})
     return events
 
 
