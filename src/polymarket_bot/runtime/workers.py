@@ -434,20 +434,8 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                     sd["reasons"] = [c.get("detail") or c.get("name") for c in checks if not c.get("passed")]
                 elif not composed.get("passed", True) and composed.get("detail"):
                     sd["reasons"] = list(sd.get("reasons") or []) + [composed["detail"]]
-                    if passed_base:
-                        try:
-                            learn.note_skip(
-                                data_dir, feat, layer,
-                                window_end=getattr(s, "window_end", None) or sd.get("window_end"),
-                                ask=getattr(s, "ask", None), side=getattr(s, "side", None),
-                                slug=getattr(s, "market_slug", None),
-                                strike=getattr(s, "price_to_beat", None) or sd.get("price_to_beat"),
-                                asset=getattr(s, "asset", None),
-                                contracts=float(getattr(eff, "max_contracts", 25) or 25),
-                                theta=float(getattr(eff, "fee_theta", 0.095) or 0.095),
-                            )
-                        except Exception:
-                            pass
+                # Skip accounting lives in the execution worker, after the risk /
+                # cooldown gate, so a cooldown-blocked trade is not charged to a layer.
                 return sd
             for asset in cfg.assets:
                 for horizon in cfg.horizons:
@@ -874,6 +862,19 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         ban.save_bandit(data_dir, bstore)
                     composed = layer["composed"]
                     if not composed.get("passed", True):
+                        # Only count a skip if this trade would otherwise have been taken
+                        # (we are past halt / pause / cooldown / kill / disabled-horizon gates).
+                        try:
+                            learn.note_skip(
+                                data_dir, raw_feat, layer,
+                                window_end=getattr(m, "window_end", None),
+                                ask=sig.ask, side=sig.side, slug=slug,
+                                strike=sig.price_to_beat, asset=sig.asset,
+                                contracts=float(getattr(executor.cfg, "max_contracts", 25) or 25),
+                                theta=float(getattr(executor.cfg, "fee_theta", 0.095) or 0.095),
+                            )
+                        except Exception:
+                            pass
                         continue
                     pm = float(composed.get("mult") or 1.0)
                     # Interlock check immediately before the fill — never skip this.

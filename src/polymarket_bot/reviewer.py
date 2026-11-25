@@ -31,7 +31,7 @@ from . import strategies as strat
 
 DEFAULT_SETTINGS = {
     "auto_promote": True,
-    "min_trades": 30,          # settled trades the candidate needs
+    "min_trades": 30,          # settled trades the candidate needs (live book AND walk-forward)
     "min_margin_usd": 10.0,    # candidate P&L must beat active by this much
     "min_margin_pct": 0.01,    # ... and by this fraction of starting equity
     "max_dd_ratio": 1.10,      # candidate drawdown ≤ active drawdown × ratio (+ $5 slack)
@@ -40,6 +40,8 @@ DEFAULT_SETTINGS = {
     "cooldown_hours": 6.0,
     "review_interval_min": 60,
     "max_step_frac": 0.25,     # max tweak per review as a fraction of the bound range
+    "require_walkforward": True,   # also require a fee-aware historical replay
+    "require_positive_pnl": True,  # live book and walk-forward must both be profitable
 }
 SETTINGS_BOUNDS = {
     "min_trades": (5, 1000), "min_margin_usd": (0.0, 1000.0), "min_margin_pct": (0.0, 0.5),
@@ -63,7 +65,7 @@ def read_settings(data_dir: Path) -> dict[str, Any]:
 def clamp_settings(raw: dict) -> dict[str, Any]:
     out = dict(DEFAULT_SETTINGS)
     for k, v in (raw or {}).items():
-        if k == "auto_promote":
+        if k in ("auto_promote", "require_walkforward", "require_positive_pnl"):
             out[k] = bool(v)
         elif k in SETTINGS_BOUNDS:
             try:
@@ -117,13 +119,39 @@ def score(m: dict) -> float:
     return float(m.get("pnl") or 0) - 0.5 * float(m.get("max_drawdown") or 0)
 
 
-def deterministic_ranking(metrics: dict[str, dict]) -> list[str]:
-    return sorted(metrics, key=lambda n: score(metrics[n]["metrics"]), reverse=True)
+def _wf_book(rec: Optional[dict]) -> dict:
+    rec = rec or {}
+    dd = rec.get("max_drawdown")
+    if dd is None:
+        dd = rec.get("max_dd") or 0.0
+    return {
+        "trades": int(rec.get("trades") or 0),
+        "pnl": float(rec.get("pnl") or 0),
+        "max_drawdown": abs(float(dd)),
+    }
+
+
+def deterministic_ranking(metrics: dict[str, dict], walkforward: Optional[dict] = None) -> list[str]:
+    """Rank by fee-aware walk-forward when available, live virtual book as a tie-break."""
+    def key(n: str):
+        live = score(metrics[n]["metrics"])
+        if walkforward and n in walkforward:
+            w = _wf_book(walkforward[n])
+            return (w["pnl"] - 0.5 * w["max_drawdown"], live)
+        return (live,)
+    return sorted(metrics, key=key, reverse=True)
 
 
 def gate(metrics: dict[str, dict], active: str, candidate: Optional[str], settings: dict,
-         starting_equity: float, last_switch_ts: Optional[float], now: Optional[float] = None) -> dict[str, Any]:
-    """Deterministic promotion gate. Returns {passed, checks:[{rule, passed, detail}]}."""
+         starting_equity: float, last_switch_ts: Optional[float], now: Optional[float] = None,
+         walkforward: Optional[dict] = None) -> dict[str, Any]:
+    """Deterministic promotion gate. Returns {passed, checks:[{rule, passed, detail}]}.
+
+    A strategy is promoted only when BOTH its live virtual book AND a fee-aware
+    walk-forward replay are profitable, beat the current champion by the
+    configured margin, have enough trades, and do not have a worse drawdown.
+    Missing walk-forward evidence fails the gate (fail closed).
+    """
     now = now or time.time()
     checks = []
 
@@ -140,10 +168,13 @@ def gate(metrics: dict[str, dict], active: str, candidate: Optional[str], settin
     a = metrics.get(active, {}).get("metrics") or {}
     add(f"≥ {settings['min_trades']} settled trades", c.get("trades", 0) >= settings["min_trades"],
         f"{c.get('trades', 0)} trades")
+    if settings.get("require_positive_pnl", True):
+        add("live virtual book P&L is positive", float(c.get("pnl") or 0) > 0,
+            f"{c.get('pnl', 0):+.2f}")
     margin = max(settings["min_margin_usd"], settings["min_margin_pct"] * starting_equity)
     diff = float(c.get("pnl") or 0) - float(a.get("pnl") or 0)
     add(f"P&L beats active by ≥ ${margin:.2f}", diff >= margin, f"{c.get('pnl', 0):+.2f} vs {a.get('pnl', 0):+.2f} (Δ {diff:+.2f})")
-    a_dd, c_dd = float(a.get("max_drawdown") or 0), float(c.get("max_drawdown") or 0)
+    a_dd, c_dd = abs(float(a.get("max_drawdown") or 0)), abs(float(c.get("max_drawdown") or 0))
     lim = a_dd * settings["max_dd_ratio"] + 5.0
     add("drawdown not worse", c_dd <= lim, f"{c_dd:.2f} ≤ {lim:.2f}")
     pf = c.get("profit_factor")
@@ -153,6 +184,27 @@ def gate(metrics: dict[str, dict], active: str, candidate: Optional[str], settin
     if last_switch_ts:
         hrs = (now - last_switch_ts) / 3600
         add(f"cooldown ≥ {settings['cooldown_hours']}h since last switch", hrs >= settings["cooldown_hours"], f"{hrs:.1f}h")
+
+    if settings.get("require_walkforward", True):
+        wf = walkforward or {}
+        have = candidate in wf and active in wf
+        add("fee-aware walk-forward available for candidate and active", have,
+            "ok" if have else "missing — refusing promotion")
+        if have:
+            wc, wa = _wf_book(wf[candidate]), _wf_book(wf[active])
+            add(f"walk-forward ≥ {settings['min_trades']} trades",
+                wc["trades"] >= settings["min_trades"], f"{wc['trades']} trades")
+            if settings.get("require_positive_pnl", True):
+                add("walk-forward P&L is positive", wc["pnl"] > 0, f"{wc['pnl']:+.2f}")
+            wf_diff = wc["pnl"] - wa["pnl"]
+            add(f"walk-forward P&L beats active by ≥ ${margin:.2f}",
+                wf_diff >= margin,
+                f"{wc['pnl']:+.2f} vs {wa['pnl']:+.2f} (Δ {wf_diff:+.2f})")
+            wf_lim = wa["max_drawdown"] * settings["max_dd_ratio"] + 5.0
+            add("walk-forward drawdown not worse",
+                wc["max_drawdown"] <= wf_lim,
+                f"{wc['max_drawdown']:.2f} ≤ {wf_lim:.2f}")
+
     return {"passed": all(x["passed"] for x in checks), "checks": checks}
 
 
@@ -260,7 +312,7 @@ def last_switch_ts(data_dir: Path) -> Optional[float]:
     return rec.get("changed_at")
 
 
-def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict:
+def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None, walkforward=None) -> dict:
     """One review. Returns the proposal record. `llm_call(system, user) -> text` is injectable for tests."""
     from .lab_params import apply_tweaks  # local import to avoid cycles
     data_dir = Path(data_dir)
@@ -289,6 +341,24 @@ def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict
             rec.update(status="no-data", message=f"review ({trigger}): no shadow metrics yet")
             return log_decision(data_dir, rec, bus)
 
+        wf_metrics: dict = {}
+        wf_error = None
+        if walkforward is not None:
+            wf_metrics = walkforward or {}
+        else:
+            try:
+                from . import walkforward as wfmod
+                from .config import load_config
+                try:
+                    cfg = load_config("config.yaml")
+                except Exception:
+                    cfg = None
+                wf_metrics = wfmod.cached_gate_walkforward(data_dir, cfg) or {}
+            except Exception as e:
+                from .integrations import scrub
+                wf_error = scrub(f"{type(e).__name__}: {e}")
+                wf_metrics = {}
+
         provider = model = None
         if llm_call is None:
             from .integrations import KeyStore, chat
@@ -316,9 +386,9 @@ def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict
                 return log_decision(data_dir, rec, bus)
             source = "llm"
         else:
-            rank = deterministic_ranking(metrics)
+            rank = deterministic_ranking(metrics, walkforward=wf_metrics)
             reply = {"ranking": rank, "suggested_active": rank[0], "param_tweaks": {},
-                     "rationale": "deterministic ranking by P&L − 0.5 × max drawdown (no LLM configured)"}
+                     "rationale": "deterministic ranking by fee-aware walk-forward P&L − 0.5 × max drawdown (no LLM configured)"}
             source = "deterministic"
             status.update(source=source)
 
@@ -341,9 +411,15 @@ def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict
         if queued_rules:
             rec["rule_proposals"] = queued_rules
         g = gate(metrics, active["active"], reply["suggested_active"], settings,
-                 float(doc.get("starting_equity") or 1000.0), last_switch_ts(data_dir))
+                 float(doc.get("starting_equity") or 1000.0), last_switch_ts(data_dir),
+                 walkforward=wf_metrics)
         rec.update(source=source, provider=provider, model=model, ranking=reply["ranking"],
                    suggested=reply["suggested_active"], rationale=reply["rationale"], tweaks=tweaks, gate=g)
+        if wf_error:
+            rec["walkforward_error"] = wf_error
+        if wf_metrics:
+            rec["walkforward"] = {n: {k: v.get(k) for k in ("trades", "pnl", "max_drawdown", "pattern_mode")}
+                                  for n, v in wf_metrics.items()}
         if reply["suggested_active"] == active["active"]:
             rec.update(status="no-change", message=f"review ({source}): keep {active['active']}")
         elif g["passed"] and settings["auto_promote"]:

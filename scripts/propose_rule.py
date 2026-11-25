@@ -72,6 +72,8 @@ def main(argv=None) -> int:
     ap.add_argument("--actor", default="analyst")
     ap.add_argument("--stake", type=float, default=10.0)
     ap.add_argument("--all", action="store_true", help="include data/archive/**/evaluations.csv")
+    ap.add_argument("--applies-to", default=None,
+                    help="comma-separated strategy names this rule applies to (default: all)")
     a = ap.parse_args(argv)
 
     if a.json_path:
@@ -90,6 +92,8 @@ def main(argv=None) -> int:
         rule["rationale"] = a.rationale
     if a.name:
         rule["name"] = a.name
+    if a.applies_to:
+        rule["applies_to"] = a.applies_to
 
     cfg = load_config(a.config)
     data_dir = Path(a.data) if a.data else cfg.sqlite_path.parent

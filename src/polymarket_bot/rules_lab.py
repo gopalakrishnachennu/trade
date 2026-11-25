@@ -207,7 +207,52 @@ def validate_rule(raw: Any) -> dict[str, Any]:
         "when": {kind: cleaned},
         "rationale": str(raw.get("rationale") or "")[:2000],
         "name": str(raw.get("name") or raw.get("id") or "")[:80],
+        "applies_to": parse_applies_to(raw.get("applies_to")),
     }
+
+
+def parse_applies_to(raw) -> list[str] | None:
+    """None means the rule applies to every strategy. Otherwise a list of names."""
+    if raw is None or raw == "all" or raw == "*" or raw == []:
+        return None
+    if isinstance(raw, str):
+        parts = [s.strip() for s in raw.split(",") if s.strip()]
+    elif isinstance(raw, (list, tuple)):
+        parts = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        raise ValueError("applies_to must be a list of strategy names (or omitted for all)")
+    if not parts or parts == ["all"] or parts == ["*"]:
+        return None
+    from .strategies import STRATEGIES
+    known = set(STRATEGIES)
+    out: list[str] = []
+    for s in parts:
+        if s not in known:
+            raise ValueError(f"unknown strategy in applies_to: {s!r}")
+        if s not in out:
+            out.append(s)
+    return out or None
+
+
+def rule_applies_to_strategy(rule: dict, strategy: str | None) -> bool:
+    applies = rule.get("applies_to")
+    if not applies:
+        return True
+    return (strategy or "") in applies
+
+
+def set_applies_to(data_dir: Path, pid: str, applies_to, *, actor: str) -> dict | None:
+    """Update a queued rule's strategy scope without changing its status."""
+    rec = get_proposal(data_dir, pid)
+    if rec is None:
+        raise ValueError(f"unknown rule {pid}")
+    rule = dict(rec.get("rule") or {})
+    rule["applies_to"] = parse_applies_to(applies_to)
+    cleaned = validate_rule(rule)
+    updated = update_proposal(data_dir, pid, rule=cleaned)
+    append_history(data_dir, {"event": "set_applies_to", "id": pid, "actor": actor,
+                              "applies_to": cleaned.get("applies_to")})
+    return updated
 
 
 def rule_matches(rule: dict, feat: dict) -> bool:
@@ -216,6 +261,8 @@ def rule_matches(rule: dict, feat: dict) -> bool:
         f["edge_bucket"] = edge_bucket_for(_f(f.get("edge")))
     if "minutes_bucket" not in f:
         f["minutes_bucket"] = minutes_bucket_for(_f(f.get("minutes_left")))
+    if not rule_applies_to_strategy(rule, f.get("strategy") or feat.get("strategy")):
+        return False
     when = rule.get("when") or {}
     kind = "all" if "all" in when else "any"
     conds = when.get(kind) or []

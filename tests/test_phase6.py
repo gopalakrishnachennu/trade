@@ -275,6 +275,52 @@ class TestRulesLab(unittest.TestCase):
         self.assertGreater(res["delta_pnl"], 0)
         self.assertEqual(res["candidate"]["applied"], 1)
 
+    def test_applies_to_scopes_rules_per_strategy(self):
+        rule = rl.validate_rule({
+            "name": "skip-fav-only", "action": "skip",
+            "when": {"all": [{"field": "minutes_left", "op": "lt", "value": 3}]},
+            "applies_to": ["favorite"],
+            "rationale": "scope test",
+        })
+        self.assertEqual(rule["applies_to"], ["favorite"])
+        late = _feat(minutes_left=1.0, strategy="favorite")
+        other = _feat(minutes_left=1.0, strategy="baseline")
+        none = _feat(minutes_left=1.0)  # no strategy → does not match a scoped rule
+        self.assertTrue(rl.rule_matches(rule, late))
+        self.assertFalse(rl.apply_rule(rule, late).get("passed"))
+        self.assertFalse(rl.rule_matches(rule, other))
+        self.assertTrue(rl.apply_rule(rule, other).get("passed"))  # no-op for other strategies
+        self.assertFalse(rl.rule_matches(rule, none))
+        # default (omitted) applies to all
+        all_rule = rl.validate_rule({
+            "name": "skip-all", "action": "skip",
+            "when": {"all": [{"field": "minutes_left", "op": "lt", "value": 3}]},
+        })
+        self.assertIsNone(all_rule["applies_to"])
+        self.assertTrue(rl.rule_matches(all_rule, other))
+        with self.assertRaises(ValueError):
+            rl.validate_rule({
+                "name": "bad", "action": "skip",
+                "when": {"all": [{"field": "minutes_left", "op": "lt", "value": 3}]},
+                "applies_to": ["not_a_strategy"],
+            })
+        # apply_active_rules respects scope
+        dec = rl.apply_active_rules([rule], other)
+        self.assertTrue(dec.get("passed"))
+        dec = rl.apply_active_rules([rule], late)
+        self.assertFalse(dec.get("passed"))
+
+    def test_set_applies_to_updates_queue(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            rec = rl.enqueue_proposal(d, {
+                "name": "skip-scoped", "action": "skip",
+                "when": {"all": [{"field": "horizon", "op": "eq", "value": "15m"}]},
+            }, actor="test", rationale="x")
+            self.assertIsNone(rec["rule"]["applies_to"])
+            updated = rl.set_applies_to(d, rec["id"], ["favorite", "high_conviction"], actor="test")
+            self.assertEqual(updated["rule"]["applies_to"], ["favorite", "high_conviction"])
+
     def test_queue_gate_and_manual_reject(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -337,3 +383,52 @@ class TestLearningSafetyInvariants(unittest.TestCase):
         loop = src.index("def loop():", start)
         self.assertNotIn("learn.startup(", src[start:loop])
         self.assertIn("learn.startup(", src[loop:])
+
+
+class TestSkipAccounting(unittest.TestCase):
+    def test_only_active_layer_is_charged(self):
+        layer = {
+            "pattern": {"mode": "shadow", "passed": False, "detail": "pattern skip"},
+            "rule": {"mode": "active", "passed": False, "detail": "rule skip-late-chop: skip"},
+            "composed": {"passed": False, "detail": "rule skip-late-chop: skip"},
+        }
+        self.assertEqual(learn.skip_layer_hits(layer), (False, True))
+        layer["pattern"]["mode"] = "active"
+        self.assertEqual(learn.skip_layer_hits(layer), (True, True))
+        layer["rule"]["mode"] = "shadow"
+        layer["rule"]["passed"] = True
+        self.assertEqual(learn.skip_layer_hits(layer), (True, False))
+        layer["pattern"]["mode"] = "off"
+        self.assertEqual(learn.skip_layer_hits(layer), (False, False))
+
+    def test_note_skip_ignores_unattributed_and_records_rule_hits(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            ghost = {
+                "composed": {"passed": False, "detail": "???"},
+                "pattern": {"mode": "shadow", "passed": True},
+                "rule": {"mode": "shadow", "passed": True},
+            }
+            learn.note_skip(d, {"strategy": "favorite"}, ghost, window_end=1_700_000_100,
+                            ask=0.6, side="up", slug="s", strike=1.0, asset="btc")
+            p = learn.pending_skips_path(d)
+            self.assertTrue((not p.exists()) or p.read_text() == "")
+            hit = {
+                "composed": {"passed": False, "detail": "rule skip-late-chop: skip"},
+                "pattern": {"mode": "shadow", "passed": True, "mode_ok": True},
+                "rule": {"mode": "active", "passed": False},
+            }
+            learn.note_skip(d, {"strategy": "favorite"}, hit, window_end=1_700_000_100,
+                            ask=0.6, side="up", slug="s", strike=1.0, asset="btc")
+            recs = [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
+            self.assertEqual(len(recs), 1)
+            self.assertTrue(recs[0]["hit_rule"])
+            self.assertFalse(recs[0]["hit_pattern"])
+
+    def test_engine_source_does_not_note_skip(self):
+        src = (ROOT / "src/polymarket_bot/runtime/workers.py").read_text()
+        # apply_strategy is the engine path; skip accounting must happen only in execution
+        # after the cooldown/kill/pause gate, otherwise cooldown skips poison the layer book.
+        engine_fn = src.split("def apply_strategy", 1)[1].split("return sd", 1)[0]
+        self.assertNotIn("note_skip", engine_fn)
+        self.assertIn("learn.note_skip", src)

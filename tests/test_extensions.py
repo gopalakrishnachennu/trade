@@ -96,20 +96,62 @@ class MetricsGateTests(unittest.TestCase):
         return {"baseline": {"metrics": compute_metrics(mk_orders(a), 1000)},
                 "favorite": {"metrics": compute_metrics(mk_orders(c, prob=0.7), 1000)}}
 
+    def _wf(self, a_pnl=80, c_pnl=200, a_n=40, c_n=40, a_dd=20, c_dd=15):
+        return {"baseline": {"trades": a_n, "pnl": a_pnl, "max_drawdown": a_dd},
+                "favorite": {"trades": c_n, "pnl": c_pnl, "max_drawdown": c_dd}}
+
     def test_gate_rules(self):
         s = rv.clamp_settings({"min_trades": 5})
+        wf = self._wf()
         good = self._metrics([1, -1] * 5, [5, 5, -1, 5, 5, -1, 5, 5])
-        g = rv.gate(good, "baseline", "favorite", s, 1000, None)
+        g = rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=wf)
         self.assertTrue(g["passed"], g)
         few = self._metrics([1, -1] * 5, [50, 50])
-        self.assertFalse(rv.gate(few, "baseline", "favorite", s, 1000, None)["passed"])
+        self.assertFalse(rv.gate(few, "baseline", "favorite", s, 1000, None, walkforward=wf)["passed"])
         thin = self._metrics([1, -1] * 5, [1, 1, 1, 1, -1, 1])
-        self.assertFalse(rv.gate(thin, "baseline", "favorite", s, 1000, None)["passed"])  # margin
+        self.assertFalse(rv.gate(thin, "baseline", "favorite", s, 1000, None, walkforward=wf)["passed"])  # margin
         dd = self._metrics([1, -1] * 5, [40, -30, 40, -30, 40, -30, 40])
-        self.assertFalse(rv.gate(dd, "baseline", "favorite", s, 1000, None)["passed"])  # drawdown worse
-        self.assertFalse(rv.gate(good, "baseline", "favorite", s, 1000, time.time() - 60)["passed"])  # cooldown
-        self.assertFalse(rv.gate(good, "baseline", "baseline", s, 1000, None)["passed"])
-        self.assertFalse(rv.gate(good, "baseline", "nope", s, 1000, None)["passed"])
+        self.assertFalse(rv.gate(dd, "baseline", "favorite", s, 1000, None, walkforward=wf)["passed"])  # drawdown worse
+        self.assertFalse(rv.gate(good, "baseline", "favorite", s, 1000, time.time() - 60, walkforward=wf)["passed"])  # cooldown
+        self.assertFalse(rv.gate(good, "baseline", "baseline", s, 1000, None, walkforward=wf)["passed"])
+        self.assertFalse(rv.gate(good, "baseline", "nope", s, 1000, None, walkforward=wf)["passed"])
+
+    def test_gate_requires_positive_live_and_walkforward_beating_champion(self):
+        s = rv.clamp_settings({"min_trades": 5})
+        good = self._metrics([1, -1] * 5, [5, 5, -1, 5, 5, -1, 5, 5])
+        # Missing walk-forward: fail closed (the late_window bug class)
+        g = rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=None)
+        self.assertFalse(g["passed"], g)
+        self.assertTrue(any(c["rule"].startswith("fee-aware walk-forward") and not c["passed"] for c in g["checks"]))
+        # Live book looks great, but historical fee-aware replay is negative
+        late_live = {"baseline": {"metrics": compute_metrics(mk_orders([1, 2] * 20), 1000)},
+                     "late_window": {"metrics": compute_metrics(mk_orders([5, 3, -1] * 15, prob=0.7), 1000)}}
+        wf_bad = {"baseline": {"trades": 80, "pnl": 490.0, "max_drawdown": 40},
+                  "late_window": {"trades": 80, "pnl": -105.0, "max_drawdown": 50}}
+        g = rv.gate(late_live, "baseline", "late_window", s, 1000, None, walkforward=wf_bad)
+        self.assertFalse(g["passed"], g)
+        failed = {c["rule"] for c in g["checks"] if not c["passed"]}
+        self.assertTrue(any("walk-forward P&L is positive" in r for r in failed), failed)
+        # Walk-forward positive but does not beat the champion
+        wf_thin = {"baseline": {"trades": 80, "pnl": 490.0, "max_drawdown": 40},
+                   "favorite": {"trades": 80, "pnl": 495.0, "max_drawdown": 30}}
+        g = rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=wf_thin)
+        self.assertFalse(g["passed"], g)
+        # Walk-forward n too small
+        wf_few = self._wf(c_n=3)
+        self.assertFalse(rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=wf_few)["passed"])
+        # Walk-forward drawdown worse
+        wf_dd = self._wf(c_dd=80, a_dd=20)
+        self.assertFalse(rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=wf_dd)["passed"])
+        # Live virtual book is negative even if it "beats" a worse champion
+        live_loss = self._metrics([1, -1] * 20, [-3] * 20)
+        wf_ok = self._wf()
+        g = rv.gate(live_loss, "baseline", "favorite", s, 1000, None, walkforward=wf_ok)
+        self.assertFalse(g["passed"], g)
+        self.assertTrue(any("live virtual book P&L is positive" in c["rule"] and not c["passed"] for c in g["checks"]))
+        # Both books positive, candidate beats champion, min n, DD not worse
+        g = rv.gate(good, "baseline", "favorite", s, 1000, None, walkforward=self._wf())
+        self.assertTrue(g["passed"], g)
 
     def test_tweaks_are_clamped_and_step_limited(self):
         cur = {"favorite": strat.default_params("favorite"), "baseline": strat.default_params("baseline")}
@@ -131,6 +173,12 @@ class ReviewerTests(unittest.TestCase):
                 "high_conviction": {"metrics": compute_metrics(mk_orders([]), 1000)},
                 "late_window": {"metrics": compute_metrics(mk_orders([-2, 1]), 1000)}}
         (sdir / "metrics.json").write_text(json.dumps({"active": "baseline", "starting_equity": 1000, "strategies": good}))
+        self.wf = {
+            "baseline": {"trades": 80, "pnl": 50.0, "max_drawdown": 40, "pattern_mode": "off"},
+            "favorite": {"trades": 80, "pnl": 200.0, "max_drawdown": 30, "pattern_mode": "active"},
+            "high_conviction": {"trades": 80, "pnl": 120.0, "max_drawdown": 35, "pattern_mode": "active"},
+            "late_window": {"trades": 80, "pnl": -105.0, "max_drawdown": 50, "pattern_mode": "off"},
+        }
 
     def tearDown(self):
         self.td.cleanup()
@@ -158,7 +206,7 @@ class ReviewerTests(unittest.TestCase):
         def llm(s, u):
             payload["u"] = u
             return "Here you go:\n" + reply
-        rec = rv.run_review(self.d, "manual", llm_call=llm)
+        rec = rv.run_review(self.d, "manual", llm_call=llm, walkforward=self.wf)
         self.assertEqual(rec["status"], "applied", rec)
         self.assertEqual(strat.read_active(self.d)["active"], "favorite")
         self.assertNotIn("token", payload["u"].lower())
@@ -166,13 +214,13 @@ class ReviewerTests(unittest.TestCase):
         kinds = [d["kind"] for d in rv.read_decisions(self.d)]
         self.assertIn("switch", kinds)
         # immediate second review: cooldown blocks switching back
-        rec2 = rv.run_review(self.d, "manual", llm_call=lambda s, u: reply.replace('"suggested_active": "favorite"', '"suggested_active": "baseline"'))
+        rec2 = rv.run_review(self.d, "manual", llm_call=lambda s, u: reply.replace('"suggested_active": "favorite"', '"suggested_active": "baseline"'), walkforward=self.wf)
         self.assertEqual(strat.read_active(self.d)["active"], "favorite")
         self.assertEqual(rec2["status"], "pending")
 
     def test_deterministic_without_llm_and_manual_approve(self):
         rv.write_settings(self.d, {"auto_promote": False})
-        rec = rv.run_review(self.d, "manual", llm_call=None)
+        rec = rv.run_review(self.d, "manual", llm_call=None, walkforward=self.wf)
         self.assertEqual(rec["source"], "deterministic")
         self.assertEqual(rec["suggested"], "favorite")
         self.assertEqual(rec["status"], "pending")

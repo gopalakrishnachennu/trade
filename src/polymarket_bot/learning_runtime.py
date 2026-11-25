@@ -72,7 +72,14 @@ def decisions_for(feat: dict, cfg, pstore: pat.PatternStore, bandit: ban.Context
         min_mult=float(getattr(cfg, "pattern_min_mult", 0.25)),
         max_mult=float(getattr(cfg, "pattern_max_mult", 1.50)),
     )
-    return {"pattern": pdec, "bandit": bdec, "rule": rule_dec, "composed": composed, "feat": feat}
+    if isinstance(pdec, dict) and "mode" not in pdec:
+        pdec = {**pdec, "mode": p_mode}
+    if isinstance(bdec, dict) and "mode" not in bdec:
+        bdec = {**bdec, "mode": b_mode}
+    if isinstance(rule_dec, dict) and "mode" not in rule_dec:
+        rule_dec = {**rule_dec, "mode": r_mode}
+    return {"pattern": pdec, "bandit": bdec, "rule": rule_dec, "composed": composed, "feat": feat,
+            "pattern_mode": p_mode, "rules_mode": r_mode, "bandit_mode": b_mode}
 
 
 def on_settlement(order, feat: dict, layer_dec: dict, cfg, store, pstore, bandit, data_dir: Path,
@@ -378,6 +385,22 @@ def record_pattern_layer_fill(data_dir: Path, cfg, feat: dict, layer_dec: dict,
     return []
 
 
+def skip_layer_hits(layer_dec: dict) -> tuple[bool, bool]:
+    """Which active layer(s) actually caused a composed skip.
+
+    A shadow/off layer must not be charged. String-matching rule names for the
+    word "pattern" is not used — that previously tagged rule-only skips as
+    pattern skips too.
+    """
+    pdec = (layer_dec or {}).get("pattern") or {}
+    rdec = (layer_dec or {}).get("rule") or {}
+    p_mode = str(pdec.get("mode") or (layer_dec or {}).get("pattern_mode") or "off")
+    r_mode = str(rdec.get("mode") or (layer_dec or {}).get("rules_mode") or "off")
+    hit_pattern = p_mode == "active" and not pdec.get("passed", True)
+    hit_rule = r_mode == "active" and not rdec.get("passed", True)
+    return hit_pattern, hit_rule
+
+
 def note_skip(data_dir: Path, feat: dict, layer_dec: dict, *,
               window_end: Any = None, ask: Any = None, side: Any = None,
               slug: Any = None, strike: Any = None, asset: Any = None,
@@ -386,12 +409,10 @@ def note_skip(data_dir: Path, feat: dict, layer_dec: dict, *,
     composed = (layer_dec or {}).get("composed") or {}
     if composed.get("passed", True):
         return
-    reasons = list(composed.get("reasons") or [])
-    detail = str(composed.get("detail") or "")
-    hit_pattern = any("pattern" in str(x).lower() for x in reasons) or "pattern" in detail.lower()
-    hit_rule = any("rule" in str(x).lower() for x in reasons) or "rule " in detail.lower()
+    hit_pattern, hit_rule = skip_layer_hits(layer_dec)
     if not hit_pattern and not hit_rule:
-        hit_rule = True  # composed skip with no tag: still count against the rules layer
+        return
+    detail = str(composed.get("detail") or "")
     rec = {
         "ts": time.time(),
         "market_slug": slug or (feat or {}).get("market_slug"),

@@ -42,15 +42,11 @@ from polymarket_bot.bandit import compose_learning  # noqa: E402
 from polymarket_bot.calibration import unit_pnl  # noqa: E402
 from polymarket_bot.config import load_config  # noqa: E402
 from polymarket_bot.analytics import DEFAULT_TZ, ts_unix  # noqa: E402
+from polymarket_bot.walkforward import (  # noqa: E402
+    f, to_sig, pf_and_dd as _pf_and_dd, run_combined_walkforward,
+)
 from polymarket_bot.profit_lock import LockParams, evaluate as eval_lock  # noqa: E402
 from polymarket_bot.risk import trailing_hwm_state, window_start_ts  # noqa: E402
-
-
-def f(x):
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return None
 
 
 def load(paths):
@@ -65,32 +61,6 @@ def load(paths):
             rows += list(csv.DictReader(fh))
     rows.sort(key=lambda r: r.get("ts") or "")
     return rows
-
-
-def to_sig(r, cfg_min_edge):
-    reasons = [x.strip() for x in (r.get("reasons") or "").split(" | ") if x.strip()]
-    dq_ok = all(x.startswith("min_edge_after_fees") for x in reasons) and f(r.get("model_prob")) is not None and f(r.get("ask"))
-    edge = f(r.get("edge_after_fees"))
-    checks = [{"name": "data_quality", "passed": bool(dq_ok)},
-              {"name": "min_edge_after_fees", "passed": edge is not None and edge >= cfg_min_edge, "value": edge}]
-    return {"edge_after_fees": edge, "model_prob": f(r.get("model_prob")), "ask": f(r.get("ask")),
-            "seconds_remaining": f(r.get("seconds_remaining")), "horizon": r.get("horizon"), "rule_checks": checks}
-
-
-def _pf_and_dd(pnls: list[float]) -> tuple[str, float]:
-    gw = sum(x for x in pnls if x > 0)
-    gl = -sum(x for x in pnls if x <= 0)
-    pf = f"{gw / gl:.2f}" if gl > 0 else ("inf" if gw > 0 else "-")
-    eq = 0.0
-    pk = 0.0
-    dd = 0.0
-    for x in pnls:
-        eq += x
-        if eq > pk:
-            pk = eq
-        if eq - pk < dd:
-            dd = eq - pk
-    return pf, dd
 
 
 def run_strategy_walkforward(
@@ -459,101 +429,6 @@ def run_bandit_walkforward(
         "shadow_dd": sh_dd, "actions": actions,
     }
 
-
-
-def run_combined_walkforward(
-    name: str,
-    rows: list[dict],
-    outcome: dict[str, str],
-    settle_ts_map: dict[str, float],
-    *,
-    stake: float,
-    min_edge: float,
-    pattern_mode: str,
-    min_samples: int,
-    prior_strength: float,
-    skip_ev_threshold: float,
-    rules: list[dict] | None = None,
-    theta: float = 0.095,
-    tz_name: str = DEFAULT_TZ,
-    use_fees: bool = True,
-) -> dict:
-    """Walk-forward of one strategy with optional active pattern + skip rules (fee-aware)."""
-    store = pat.PatternStore(prior_strength=prior_strength)
-    paths = pat.paths_from_eval_rows(rows, tz_name)
-    taken = set()
-    pending: list[tuple[float, dict]] = []
-    pnls: list[float] = []
-    wins = 0
-    skipped_pattern = 0
-    skipped_rules = 0
-
-    def flush_until(t_now: float) -> None:
-        nonlocal pending
-        still, ready = [], []
-        for s_ts, rec in pending:
-            (ready if s_ts <= t_now else still).append((s_ts, rec))
-        ready.sort(key=lambda x: x[0])
-        for _, rec in ready:
-            store.update_trade(rec["feats"], order_id=rec["order_id"], pnl_usd=rec["pnl_usd"],
-                               cost_usd=rec["cost_usd"], outcome=rec["outcome"])
-        pending = still
-
-    for i, r in enumerate(rows):
-        t_row = ts_unix(r.get("ts"), tz_name)
-        if t_row is None:
-            continue
-        flush_until(t_row)
-        slug = r.get("market_slug") or ""
-        side = r.get("side") or ""
-        key = (slug, side)
-        if key in taken or slug not in outcome:
-            continue
-        ok, _ = strat.evaluate(name, None, to_sig(r, min_edge), min_edge)
-        if not ok:
-            continue
-        taken.add(key)
-        ask = f(r.get("ask"))
-        if not ask or ask <= 0 or ask >= 1:
-            continue
-        sr = f(r.get("seconds_remaining")) or 0.0
-        s_ts = settle_ts_map.get(slug) or (t_row + sr)
-        feats = pat.extract_features(r, ts=t_row, tz_name=tz_name, strategy=name, ticks=paths.get(slug) or [])
-        dec = store.evaluate(feats, mode=pattern_mode, min_samples=min_samples,
-                             skip_ev_threshold=skip_ev_threshold)
-        rule_dec = rl.apply_active_rules(rules or [], feats)
-        composed = compose_learning(dec, None, rule_dec, pattern_mode=pattern_mode,
-                                    bandit_mode="off", rules_mode="active" if rules else "off")
-        if not composed.get("passed", True):
-            if not dec.get("passed", True) and pattern_mode == "active":
-                skipped_pattern += 1
-            if not rule_dec.get("passed", True):
-                skipped_rules += 1
-            continue
-        won = outcome[slug] == side
-        m = float(composed.get("mult") or 1.0)
-        if use_fees:
-            pnl, cost, _fee = unit_pnl(ask, won, theta=theta, stake=stake * m)
-        else:
-            cost = stake * m
-            pnl = cost * (1.0 / ask - 1.0) if won else -cost
-        pnls.append(pnl)
-        if won:
-            wins += 1
-        pending.append((s_ts, {
-            "feats": feats, "order_id": f"comb-{name}-{i}",
-            "outcome": "win" if won else "loss", "pnl_usd": pnl, "cost_usd": cost,
-        }))
-    flush_until(float("inf"))
-    n = len(pnls)
-    tot = sum(pnls)
-    pf, dd = _pf_and_dd(pnls)
-    return {
-        "strategy": name, "pattern_mode": pattern_mode, "trades": n, "wins": wins,
-        "win_rate": (wins / n) if n else 0.0, "pnl": tot, "avg": (tot / n) if n else 0.0,
-        "pf": pf, "max_dd": dd, "skipped_pattern": skipped_pattern, "skipped_rules": skipped_rules,
-        "candidates": len(taken),
-    }
 
 
 def print_calibration(rows, outcome, settle_ts_map, *, theta: float, stake: float, tz_name: str = DEFAULT_TZ) -> dict:
