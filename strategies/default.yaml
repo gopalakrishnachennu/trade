@@ -105,3 +105,18 @@ patterns:
   min_mult: 0.25
   max_mult: 1.50
   skip_ev_threshold: -0.02
+  # Phase 6 learning layers (each off / shadow / active; default shadow).
+  # shadow logs and shows results without changing live entries.
+  attribution_mode: shadow
+  counterfactual_mode: shadow   # ingest evaluation CF into a *separate* evidence stream
+  cf_weight: 0.25               # weight of one CF example vs one real fill (active blend)
+  calibration_mode: shadow      # isotonic/Platt per asset|horizon; active may only tighten edge
+  calibration_method: isotonic
+  bandit_mode: shadow           # Thompson sampling over contexts; actions skip / 0.5× / 1× / 1.5×
+
+rules_lab:
+  # Structured analyst (or later LLM) rule proposals. Promotion is deterministic.
+  mode: shadow
+  auto_promote: false
+  auto_demote: true
+  min_shadow_trades: 30

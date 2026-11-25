@@ -113,6 +113,25 @@ class Store:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trade_attribution (
+                order_id TEXT PRIMARY KEY,
+                primary_reason TEXT,
+                label TEXT,
+                tags TEXT,
+                detail TEXT,
+                p_bucket TEXT,
+                fees_usd REAL,
+                pnl_usd REAL,
+                cost_usd REAL,
+                outcome TEXT,
+                edge REAL,
+                model_prob REAL,
+                updated_ts TEXT
+            )
+            """
+        )
         self.conn.commit()
         self._init_csv(self.trades_csv, TRADES_FIELDS)
         self._init_csv(self.evaluations_csv, EVAL_FIELDS)
@@ -239,6 +258,39 @@ class Store:
         out = {}
         for r in cur.fetchall():
             d = dict(zip(cols, r))
+            out[str(d["order_id"])] = d
+        return out
+
+    def write_attribution(self, rec: dict) -> None:
+        cols = [
+            "order_id", "primary_reason", "label", "tags", "detail", "p_bucket",
+            "fees_usd", "pnl_usd", "cost_usd", "outcome", "edge", "model_prob", "updated_ts",
+        ]
+        placeholders = ",".join(["?"] * len(cols))
+        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "order_id")
+        row = dict(rec)
+        if isinstance(row.get("tags"), (list, tuple)):
+            import json as _json
+            row["tags"] = _json.dumps(list(row["tags"]))
+        self.conn.execute(
+            f"INSERT INTO trade_attribution ({','.join(cols)}) VALUES ({placeholders}) ON CONFLICT(order_id) DO UPDATE SET {updates}",
+            [row.get(c) for c in cols],
+        )
+        self.conn.commit()
+
+    def all_attributions(self) -> dict[str, dict]:
+        import json as _json
+        cur = self.conn.execute("SELECT * FROM trade_attribution")
+        cols = [d[0] for d in cur.description]
+        out = {}
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            tags = d.get("tags")
+            if isinstance(tags, str) and tags.startswith("["):
+                try:
+                    d["tags"] = _json.loads(tags)
+                except Exception:
+                    d["tags"] = [tags]
             out[str(d["order_id"])] = d
         return out
 

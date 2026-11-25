@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · RULES LAB</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+<style>
+.scroll{max-height:420px;overflow:auto}
+textarea,input,select{background:#0c0f14;color:var(--text);border:1px solid #2a3140;font:12px/1.4 var(--mono);padding:6px 8px;width:100%}
+.form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form .full{grid-column:1/-1}
+pre.cmd{background:#0c0f14;border:1px solid #2a3140;padding:8px;overflow:auto;white-space:pre-wrap}
+</style>
+</head><body>
+<main>
+<h1>RULES LAB <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="top"></div>
+<h2>PROPOSALS</h2>
+<div class="panel"><div class="scroll"><table id="q"><thead><tr>
+  <th>Id / status</th><th>Rule</th><th>Rationale</th><th>Backtest</th><th>Live shadow</th><th>Gate</th><th></th>
+</tr></thead><tbody></tbody></table></div></div>
+<h2>SUBMIT A RULE</h2>
+<div class="panel">
+  <div class="mut" style="margin-bottom:8px">Structured DSL only: conditions on context features → <code>skip</code> or a size multiplier in [0.25, 1.50]. Rules cannot touch mode, caps, the session loss limit, the rolling HALT, or paper-only. Every proposal is walk-forward backtested, then placed in shadow. Promotion to active requires ≥30 live shadow trades, better net P&amp;L than the champion, and drawdown not worse. Auto-promote is off; auto-demote is on. Manual approve/reject is below.</div>
+  <div class="form">
+    <label>Name<br><input id="name" placeholder="skip-high-vol-late-5m"></label>
+    <label>Action<br><select id="action"><option value="skip">skip</option><option value="size_mult">size_mult</option></select></label>
+    <label>Size multiplier (if size_mult)<br><input id="mult" type="number" step="0.05" min="0.25" max="1.5" value="0.5"></label>
+    <label>Combine<br><select id="combine"><option value="all">all (AND)</option><option value="any">any (OR)</option></select></label>
+    <label class="full">When (field=op:value, comma-separated)<br><input id="when" placeholder="horizon=eq:5m,vol_regime=eq:high,minutes_left=lt:3"></label>
+    <label class="full">Rationale<br><textarea id="rationale" rows="3" placeholder="Why this rule should help net P&L per dollar staked"></textarea></label>
+  </div>
+  <div style="margin-top:8px"><button class="pri" onclick="propose()">Backtest &amp; enqueue</button> <span id="msg" class="msg mut"></span></div>
+  <pre class="cmd mut" id="cmd"></pre>
+</div>
+<h2>PROMOTION HISTORY</h2>
+<div class="panel"><div class="scroll"><table id="hist"><thead><tr>
+  <th>Time ET</th><th>Event</th><th>Id</th><th>Actor</th><th>Detail</th>
+</tr></thead><tbody></tbody></table></div></div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+const CMD = "PYTHONPATH=src .venv/bin/python scripts/propose_rule.py --name skip-high-vol-late-5m --action skip --when 'horizon=eq:5m,vol_regime=eq:high,minutes_left=lt:3' --rationale 'late 5m high-vol entries have been fee-eaten' --data /opt/polymarket-bot/data";
+document.getElementById("cmd").textContent = "CLI equivalent (from the repo, on the droplet):\n" + CMD;
+
+function money(v){ return v==null ? "—" : PM.susd(v); }
+function ruleTxt(r){
+  if (!r) return "—";
+  const w = r.when || {};
+  const kind = w.all ? "all" : "any";
+  const conds = (w[kind] || []).map(c => `${c.field} ${c.op} ${c.value}`).join(` ${kind==="all"?"AND":"OR"} `);
+  return `${r.action}${r.action==="size_mult" ? " ×"+r.size_mult : ""} when ${conds}`;
+}
+function render(d){
+  const c = d.config || {};
+  document.getElementById("sum").textContent = `· mode ${ (c.mode||"shadow").toUpperCase() } · auto-promote ${c.auto_promote?"on":"off"} · auto-demote ${c.auto_demote?"on":"off"} · min ${c.min_trades||30} shadow trades`;
+  const active = d.active || [];
+  document.getElementById("top").innerHTML = `<div class="kv">
+    <span>Mode</span><span><b>${PM.esc((c.mode||"shadow").toUpperCase())}</b> — switch from Controls without a redeploy. Shadow logs would-have decisions; active applies skip / size_mult after hard caps.</span>
+    <span>Active rules</span><span>${active.length ? active.map(p => `<b>${PM.esc(p.id)}</b>`).join(", ") : "none (champion is the default book)"}</span>
+    <span>Gate</span><span>Beat the champion over ≥${c.min_trades||30} live shadow trades on net P&amp;L, drawdown not worse. Learning cannot loosen caps, the session loss limit, the rolling HALT, paper-only, or fail-closed.</span>
+  </div>`;
+  document.querySelector("#q tbody").innerHTML = (d.queue||[]).slice().reverse().map(p => {
+    const bt = p.backtest || {};
+    const sh = p.shadow || {};
+    const g = p.gate || {};
+    const pending = ["proposed","shadow","ready"].includes(p.status);
+    return `<tr>
+      <td><b>${PM.esc(p.id)}</b><div class="mut">${PM.esc(p.status)} · ${PM.esc(p.source||"")} / ${PM.esc(p.actor||"")}</div></td>
+      <td style="white-space:normal;max-width:280px">${PM.esc(ruleTxt(p.rule))}<div class="mut">${PM.esc((p.rule||{}).name||"")}</div></td>
+      <td class="mut" style="white-space:normal;max-width:260px">${PM.esc(p.rationale||"")}</td>
+      <td class="n">${bt.delta_pnl==null?"—":`<b class="${bt.delta_pnl>=0?"pos":"neg"}">${money(bt.delta_pnl)}</b><div class="mut">cand ${money((bt.candidate||{}).pnl)} vs champ ${money((bt.champion||{}).pnl)}</div>`}</td>
+      <td class="n">${sh.trades!=null?`${sh.trades} tr · ${money(sh.pnl)} vs ${money(sh.champ_pnl)}`:"—"}</td>
+      <td>${g.passed==null?"":(g.passed?'<span class="pos">PASS</span>':'<span class="neg">FAIL</span>')}<div class="mut">${PM.esc((g.checks||[]).map(c=> (c.passed?"✓":"✗")+" "+c.rule).join(" · "))}</div></td>
+      <td>${pending?`<button class="pri" onclick="act('${p.id}','approve')">Approve</button> <button onclick="act('${p.id}','reject')">Reject</button>`: (p.status==="active"?`<button onclick="act('${p.id}','demote')">Demote</button>`:"")}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="7" class="mut">No proposals yet. Use the form below or scripts/propose_rule.py.</td></tr>`;
+  document.querySelector("#hist tbody").innerHTML = (d.history||[]).slice().reverse().map(h => `<tr>
+    <td class="mut">${PM.et(h.ts_unix || h.ts || h.created_ts)}</td>
+    <td>${PM.esc(h.event||"")}</td>
+    <td>${PM.esc(h.id||"")}</td>
+    <td class="mut">${PM.esc(h.actor||"")}</td>
+    <td class="mut">${PM.esc(h.note || (h.delta_pnl!=null?("Δ "+h.delta_pnl):"") || "")}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="mut">No history yet.</td></tr>`;
+}
+function parseWhen(s, combine){
+  const conds = [];
+  for (const part of (s||"").split(",")) {
+    const p = part.trim(); if (!p) continue;
+    const eq = p.indexOf("="); if (eq<0) throw new Error("expected field=op:value in "+p);
+    const field = p.slice(0,eq).trim();
+    const rest = p.slice(eq+1);
+    const col = rest.indexOf(":"); if (col<0) throw new Error("expected field=op:value in "+p);
+    const op = rest.slice(0,col).trim();
+    let value = rest.slice(col+1).trim();
+    if (/^-?\d+(\.\d+)?$/.test(value)) value = Number(value);
+    else if (value==="true"||value==="false") value = value==="true";
+    conds.push({field, op, value});
+  }
+  if (!conds.length) throw new Error("when is empty");
+  return {[combine]: conds};
+}
+async function propose(){
+  const el = document.getElementById("msg");
+  try {
+    const action = document.getElementById("action").value;
+    const rule = {
+      name: document.getElementById("name").value.trim() || "rule",
+      action,
+      size_mult: action==="size_mult" ? Number(document.getElementById("mult").value) : null,
+      when: parseWhen(document.getElementById("when").value, document.getElementById("combine").value),
+      rationale: document.getElementById("rationale").value.trim(),
+    };
+    el.textContent = "backtesting…";
+    const r = await PM.send("POST", "/api/rules-lab/propose", {rule, rationale: rule.rationale});
+    el.textContent = "enqueued " + (r.result||{}).id + " (" + ((r.result||{}).status||"") + ")";
+    load();
+  } catch(e) { el.textContent = "error: " + e.message; }
+}
+async function act(id, a){
+  if (a==="approve" && !confirm("Activate this rule on the live paper book? Hard caps, the session loss limit, the rolling HALT, and paper-only still apply.")) return;
+  try { await PM.send("POST", `/api/rules-lab/${id}/${a}`, {}); load(); }
+  catch(e){ alert(e.message); }
+}
+async function load(){
+  try { render(await PM.get("/api/rules-lab")); }
+  catch(e){ document.getElementById("top").innerHTML = `<span class="neg">${PM.esc(e.message)}</span>`; }
+}
+load(); setInterval(load, 15000);
+</script>
+</body></html>

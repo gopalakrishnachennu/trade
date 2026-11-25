@@ -33,6 +33,10 @@
     <th>Time ET</th><th>Market</th><th>Side</th><th>Hour ET</th><th>Weekday</th><th class="n">Left</th><th class="n">Δ Strike (σ)</th><th>Vol</th><th class="n">Model P</th><th class="n">Edge</th><th>Outcome</th><th class="n">P&amp;L</th>
   </tr></thead><tbody></tbody></table></div>
 </div>
+<h2>CALIBRATION · MODEL P VS REALIZED FREQUENCY</h2>
+<div class="panel" id="calib"></div>
+<h2>CONTEXTUAL BANDIT (THOMPSON) · FEE-AWARE OBJECTIVE</h2>
+<div class="panel" id="bandit"></div>
 </main>
 <script src="assets/common.js"></script>
 <script>
@@ -44,6 +48,8 @@ const TABS = [
   ["hour_bucket", "Hour Bucket (ET)"],
   ["vol_regime", "Volatility Regime"],
   ["distance_bucket", "Distance from Strike"],
+  ["edge_bucket", "Edge after fees"],
+  ["minutes_bucket", "Minutes left"],
   ["weekday", "Weekday"],
   ["strategy", "Strategy"],
 ];
@@ -168,10 +174,80 @@ function renderRecent(d) {
   </tr>`).join("") || `<tr><td colspan="12" class="mut">No settled trade features recorded yet.</td></tr>`;
 }
 
+
+function fmtPct(v){ return v==null ? "—" : ((v>=0?"+":"") + (Number(v)*100).toFixed(1) + "%"); }
+function bucketLabel(b){
+  if (b.label || b.bucket) return b.label || b.bucket;
+  if (b.lo != null && b.hi != null) return Number(b.lo).toFixed(2) + "–" + Number(b.hi).toFixed(2);
+  return "—";
+}
+function renderCalib(d) {
+  const el = document.getElementById("calib");
+  const c = d.config || {}, doc = d.calibration;
+  if (!doc || doc.error) {
+    el.innerHTML = `<span class="mut">${doc && doc.error ? PM.esc(doc.error) : "No calibration report yet. It is built on execution startup from stored evaluations (walk-forward, no lookahead)."} Mode: ${PM.esc(c.calibration_mode||"shadow")} (${PM.esc(c.calibration_method||"isotonic")}). Active mode may only tighten model P / edge — it can never loosen the min-edge gate.</span>`;
+    return;
+  }
+  const o = doc.overall || {};
+  const buckets = o.buckets || o.reliability || [];
+  const rows = buckets.map(b => `<tr>
+    <td>${PM.esc(bucketLabel(b))}</td>
+    <td class="n">${b.n||0}</td>
+    <td class="n">${b.mean_p!=null ? Number(b.mean_p).toFixed(3) : (b.p!=null?Number(b.p).toFixed(3):"—")}</td>
+    <td class="n">${b.freq!=null ? Number(b.freq).toFixed(3) : (b.realized!=null?Number(b.realized).toFixed(3):"—")}</td>
+  </tr>`).join("");
+  const groups = (doc.by_asset_horizon || []).map(g => `<tr>
+    <td><b>${PM.esc(g.key || ((g.asset||"")+" "+(g.horizon||"")))}</b></td>
+    <td class="n">${g.n||0}</td>
+    <td class="n">${g.brier!=null?Number(g.brier).toFixed(4):"—"}</td>
+    <td class="n">${g.log_loss!=null?Number(g.log_loss).toFixed(4):"—"}</td>
+  </tr>`).join("");
+  el.innerHTML = `<div class="kv">
+    <span>Mode</span><span><b>${PM.esc((doc.mode||c.calibration_mode||"shadow").toUpperCase())}</b> · method ${PM.esc(doc.method||c.calibration_method||"isotonic")} · CF weight ${c.cf_weight??0.25} · counterfactual ${PM.esc(c.counterfactual_mode||"shadow")}</span>
+    <span>Overall</span><span>n=${o.n||0} · Brier <b>${o.brier!=null?Number(o.brier).toFixed(4):"—"}</b> · log loss <b>${o.log_loss!=null?Number(o.log_loss).toFixed(4):"—"}</b></span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+    <div><div class="mut" style="margin-bottom:4px">Reliability buckets</div>
+      <table><thead><tr><th>Bucket</th><th class="n">n</th><th class="n">Mean P</th><th class="n">Realized</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="mut">No buckets.</td></tr>'}</tbody></table></div>
+    <div><div class="mut" style="margin-bottom:4px">Per asset × horizon</div>
+      <table><thead><tr><th>Group</th><th class="n">n</th><th class="n">Brier</th><th class="n">Log loss</th></tr></thead><tbody>${groups||'<tr><td colspan="4" class="mut">No groups.</td></tr>'}</tbody></table></div>
+  </div>`;
+}
+
+function renderBandit(d) {
+  const el = document.getElementById("bandit");
+  const c = d.config || {}, b = d.bandit || {};
+  const sh = b.shadow || {};
+  const roi = sh.shadow_roi;
+  const ctx = (b.contexts || []).slice(0, 15);
+  const recent = b.recent || [];
+  el.innerHTML = `<div class="kv">
+    <span>Mode</span><span><b>${PM.esc((c.bandit_mode||"shadow").toUpperCase())}</b> — default is shadow (logs would-have skip / 0.5× / 1× / 1.5× Kelly and the counterfactual P&amp;L). Active still sits inside hard caps. Switch from Controls.</span>
+    <span>Shadow book</span><span>decisions ${sh.decisions||sh.n||0} · would-have P&amp;L <b class="${(sh.shadow_pnl||0)>=0?"pos":"neg"}">${PM.susd(sh.shadow_pnl)}</b> on ${PM.susd(sh.shadow_cost)} staked · fee-aware ROI <b>${roi==null?"—":fmtPct(roi)}</b> (net P&amp;L per dollar staked)</span>
+    <span>Contexts</span><span>${b.n_contexts||ctx.length} with updates · hierarchical shrinkage from the Beta pattern layer. Objective favors fewer, higher-quality bets.</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:12px;margin-top:10px">
+    <div class="scroll"><table><thead><tr><th>Context</th><th class="n">n</th><th class="n">ROI</th><th class="n">P&amp;L</th><th>Arms (n / ROI)</th></tr></thead><tbody>
+      ${ctx.map(r => `<tr>
+        <td style="white-space:normal;max-width:280px">${PM.esc(r.context)}</td>
+        <td class="n">${r.n}</td>
+        <td class="n ${(r.roi||0)>=0?"pos":"neg"}">${fmtPct(r.roi)}</td>
+        <td class="n ${(r.pnl||0)>=0?"pos":"neg"}">${PM.susd(r.pnl)}</td>
+        <td class="mut">${Object.entries(r.arms||{}).map(([a,s]) => a + ": n=" + s.n + (s.roi==null?"":" "+fmtPct(s.roi)).replace("+","")).join(" · ")}</td>
+      </tr>`).join("") || '<tr><td colspan="5" class="mut">No arm updates yet (shadow starts logging on new evaluations / settlements).</td></tr>'}
+    </tbody></table></div>
+    <div class="scroll"><table><thead><tr><th>Recent decision</th></tr></thead><tbody>
+      ${recent.slice().reverse().map(x => `<tr><td style="white-space:normal">${PM.esc(typeof x === "string" ? x : JSON.stringify(x))}</td></tr>`).join("") || '<tr><td class="mut">No recent bandit decisions stored yet.</td></tr>'}
+    </tbody></table></div>
+  </div>`;
+}
+
+
 async function load() {
   try {
     DATA = await PM.get("/api/patterns");
     renderTop(DATA); renderHeatmap(DATA); renderTabs(DATA); renderTable(DATA); renderRecent(DATA);
+    renderCalib(DATA); renderBandit(DATA);
   } catch (e) {
     document.getElementById("top").innerHTML = `<span class="neg">Failed to load patterns: ${PM.esc(e.message)}</span>`;
   }

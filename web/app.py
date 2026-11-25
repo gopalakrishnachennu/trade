@@ -708,6 +708,16 @@ async def page_patterns():
     return _page("patterns.html")
 
 
+@app.get("/attribution")
+async def page_attribution():
+    return _page("attribution.html")
+
+
+@app.get("/rules-lab")
+async def page_rules_lab():
+    return _page("rules-lab.html")
+
+
 @app.get("/api/patterns")
 async def api_patterns():
     await _ensure_state()
@@ -736,9 +746,140 @@ async def api_patterns():
             "min_mult": eff.pattern_min_mult,
             "max_mult": eff.pattern_max_mult,
             "skip_ev_threshold": eff.pattern_skip_ev_threshold,
+            "bandit_mode": getattr(eff, "bandit_mode", "shadow"),
+            "calibration_mode": getattr(eff, "calibration_mode", "shadow"),
+            "calibration_method": getattr(eff, "calibration_method", "isotonic"),
+            "counterfactual_mode": getattr(eff, "counterfactual_mode", "shadow"),
+            "cf_weight": getattr(eff, "cf_weight", 0.25),
         }
+        try:
+            from polymarket_bot.bandit import load_bandit
+            doc["bandit"] = load_bandit(DATA, prior_strength=eff.pattern_prior_strength).summary()
+        except Exception as e:
+            doc["bandit"] = {"error": str(e)}
+        try:
+            from polymarket_bot import calibration as cal
+            doc["calibration"] = cal.load_report(DATA)
+        except Exception as e:
+            doc["calibration"] = {"error": str(e)}
         return doc
     return JSONResponse(await asyncio.to_thread(build), headers={"Cache-Control": "no-store"})
+
+
+
+def _open_store():
+    from polymarket_bot.store import Store
+    cfg = HUB.cfg
+    return Store(cfg.sqlite_path, cfg.trades_csv, cfg.evaluations_csv, cfg.equity_csv)
+
+
+@app.get("/api/attribution")
+async def api_attribution():
+    await _ensure_state()
+    def build():
+        from polymarket_bot import attribution as attr
+        from polymarket_bot import learning_runtime as learn
+        cfg = HUB.eff or HUB.cfg
+        store = _open_store()
+        try:
+            ev_rows = learn.load_eval_rows(cfg.evaluations_csv)
+            existing = store.all_attributions()
+            settled_n = sum(1 for o in store.all_orders() if o.status == "settled" and o.pnl_usd is not None)
+            if getattr(cfg, "attribution_mode", "shadow") != "off" and len(existing) < settled_n:
+                learn.backfill_attribution(store, ev_rows, cfg)
+                existing = store.all_attributions()
+            tagged = []
+            for o in store.all_orders():
+                if o.status != "settled" or o.pnl_usd is None:
+                    continue
+                rec = existing.get(o.id) or {}
+                tagged.append({
+                    "order_id": o.id, "ts": o.ts, "asset": o.asset, "horizon": o.horizon, "side": o.side,
+                    "primary": rec.get("primary_reason") or rec.get("primary"),
+                    "label": rec.get("label"), "tags": rec.get("tags") or [],
+                    "detail": rec.get("detail"), "fees_usd": rec.get("fees_usd"),
+                    "pnl_usd": rec.get("pnl_usd", o.pnl_usd), "cost_usd": rec.get("cost_usd") or o.cost_usd,
+                    "outcome": rec.get("outcome") or ("win" if (o.pnl_usd or 0) > 0 else "loss"),
+                    "edge": rec.get("edge"), "model_prob": rec.get("model_prob") or o.model_prob,
+                    "p_bucket": rec.get("p_bucket"),
+                })
+            doc = attr.summarize(tagged)
+            doc["config"] = {"mode": getattr(cfg, "attribution_mode", "shadow")}
+            doc["rows"] = tagged
+            return doc
+        finally:
+            store.close()
+    return JSONResponse(await asyncio.to_thread(build), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/rules-lab")
+async def api_rules_lab():
+    await _ensure_state()
+    def build():
+        from polymarket_bot import rules_lab as rl
+        cfg = HUB.eff or HUB.cfg
+        q = rl.load_queue(DATA)
+        return {
+            "config": {
+                "mode": getattr(cfg, "rules_lab_mode", "shadow"),
+                "auto_promote": getattr(cfg, "rules_lab_auto_promote", False),
+                "auto_demote": getattr(cfg, "rules_lab_auto_demote", True),
+                "min_trades": getattr(cfg, "rules_lab_min_trades", 30),
+            },
+            "queue": q,
+            "active": [p for p in q if p.get("status") == "active"],
+            "history": rl.read_history(DATA, 200),
+        }
+    return JSONResponse(await asyncio.to_thread(build), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/rules-lab/propose")
+async def api_rules_propose(request: Request):
+    bad = _need_header(request)
+    if bad:
+        return bad
+    body = await _json_body(request)
+    def run():
+        from polymarket_bot import rules_lab as rl
+        from polymarket_bot import learning_runtime as learn
+        from polymarket_bot import calibration as cal
+        import time as _t
+        cfg = HUB.eff or HUB.cfg
+        rec = rl.enqueue_proposal(DATA, body.get("rule") or body, actor="operator",
+                                  rationale=str(body.get("rationale") or (body.get("rule") or {}).get("rationale") or ""),
+                                  source="ui")
+        rows = learn.load_eval_rows(cfg.evaluations_csv)
+        outcome, settle = cal.index_outcomes(rows, tz_name=cfg.timezone)
+        examples = cal.asof(cal.iter_counterfactuals(rows, outcome, settle, tz_name=cfg.timezone, theta=cfg.fee_theta), _t.time())
+        result = rl.backtest_rule(rec["rule"], examples, champion_rules=rl.active_rules(DATA), stake=10.0)
+        rl.attach_backtest(DATA, rec["id"], result)
+        return rl.get_proposal(DATA, rec["id"])
+    try:
+        rec = await asyncio.to_thread(run)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return {"ok": True, "result": rec}
+
+
+@app.post("/api/rules-lab/{pid}/{action}")
+async def api_rules_resolve(pid: str, action: str, request: Request):
+    bad = _need_header(request)
+    if bad:
+        return bad
+    body = await _json_body(request)
+    status = {"approve": "active", "reject": "rejected", "demote": "demoted", "shadow": "shadow"}.get(action)
+    if not status:
+        return JSONResponse({"ok": False, "error": "action must be approve, reject, demote, or shadow"}, status_code=400)
+    def run():
+        from polymarket_bot import rules_lab as rl
+        return rl.set_status(DATA, pid, status, actor="operator", note=str(body.get("note") or ""))
+    try:
+        rec = await asyncio.to_thread(run)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    if not rec:
+        return JSONResponse({"ok": False, "error": "unknown proposal"}, status_code=404)
+    return {"ok": True, "result": rec}
 
 
 @app.get("/integrations")

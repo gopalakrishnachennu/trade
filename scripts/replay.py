@@ -18,6 +18,8 @@ Walk-forward rules (zero lookahead):
   * Pattern OFF: fixed stake (default $10), no pattern multiplier or skip.
   * Pattern ON:  PatternStore in 'active' mode, scaling stake within [0.25x, 1.50x]
                  and skipping contexts with n >= min_samples and EV <= -2% (UCB < 0).
+  * Phase 6:     fee-aware calibration report (model P vs realized, Brier/log loss)
+                 and a Thompson bandit walk-forward (shadow vs active) on the same tape.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from polymarket_bot import patterns as pat  # noqa: E402
 from polymarket_bot import strategies as strat  # noqa: E402
+from polymarket_bot import calibration as cal  # noqa: E402
+from polymarket_bot import bandit as ban  # noqa: E402
 from polymarket_bot.analytics import DEFAULT_TZ, ts_unix  # noqa: E402
 from polymarket_bot.profit_lock import LockParams, evaluate as eval_lock  # noqa: E402
 from polymarket_bot.risk import trailing_hwm_state, window_start_ts  # noqa: E402
@@ -354,6 +358,128 @@ def run_risk_walkforward(
 
 
 
+def run_bandit_walkforward(
+    rows: list[dict],
+    outcome: dict[str, str],
+    settle_ts_map: dict[str, float],
+    *,
+    stake: float,
+    min_edge: float,
+    theta: float = 0.095,
+    prior_strength: float = 10.0,
+    tz_name: str = DEFAULT_TZ,
+    mode: str = "shadow",
+) -> dict:
+    """Walk-forward Thompson selector on fee-aware CF P&L. Zero lookahead."""
+    pstore = pat.PatternStore(prior_strength=prior_strength)
+    bstore = ban.ContextBandit(prior_strength=prior_strength, seed=1)
+    pending: list[tuple[float, dict]] = []
+    taken = set()
+    live_pnls: list[float] = []
+    live_cost = 0.0
+    shadow_pnls: list[float] = []
+    shadow_cost = 0.0
+    actions = {a: 0 for a in ban.ACTIONS}
+
+    def flush(t_now: float) -> None:
+        nonlocal pending
+        ready, still = [], []
+        for s_ts, rec in pending:
+            (ready if s_ts <= t_now else still).append((s_ts, rec))
+        ready.sort(key=lambda x: x[0])
+        for _, rec in ready:
+            pstore.update_trade(rec["feats"], order_id=rec["oid"], pnl_usd=rec["pnl"],
+                                cost_usd=rec["cost"], outcome=rec["outcome"])
+            bstore.update(rec["feats"], action=rec["action"], order_id=rec["oid"],
+                          pnl_usd=rec["pnl"], cost_usd=rec["cost"], outcome=rec["outcome"])
+        pending = still
+
+    for i, r in enumerate(rows):
+        t_row = ts_unix(r.get("ts"), tz_name)
+        if t_row is None:
+            continue
+        flush(t_row)
+        slug, side = r.get("market_slug") or "", r.get("side") or ""
+        key = (slug, side)
+        if key in taken or slug not in outcome:
+            continue
+        ok, _ = strat.evaluate("baseline", None, to_sig(r, min_edge), min_edge)
+        if not ok:
+            continue
+        ask = f(r.get("ask"))
+        if not ask or ask <= 0 or ask >= 1:
+            continue
+        taken.add(key)
+        sr = f(r.get("seconds_remaining")) or 0.0
+        s_ts = settle_ts_map.get(slug) or (t_row + sr)
+        won = outcome[slug] == side
+        feats = pat.extract_features(r, ts=t_row, tz_name=tz_name, strategy="baseline")
+        dec = bstore.decide(feats, pstore, mode=mode, record_shadow=True)
+        pnl1, cost1, _ = cal.unit_pnl(ask, won, theta=theta, stake=stake)
+        # live paper path: only skip when mode is active and passed is False
+        live_mult = dec["mult"] if mode == "active" else 1.0
+        if mode == "active" and not dec["passed"]:
+            live_mult = 0.0
+        live_pnls.append(pnl1 * live_mult)
+        live_cost += cost1 * live_mult
+        # shadow would-have
+        wa = dec.get("would_action") or "1.0"
+        actions[wa] = actions.get(wa, 0) + 1
+        wm = 0.0 if wa == "skip" else float(wa)
+        shadow_pnls.append(pnl1 * wm)
+        shadow_cost += cost1 * wm
+        if live_mult > 0:
+            pending.append((s_ts, {
+                "feats": feats, "oid": f"b-{i}", "action": wa if mode == "active" else "1.0",
+                "pnl": pnl1 * live_mult, "cost": cost1 * live_mult,
+                "outcome": "win" if won else "loss",
+            }))
+        elif mode == "active":
+            # still update skip arm with 0 pnl / 0 cost? skip has no stake; record 0,0 to count n
+            pending.append((s_ts, {
+                "feats": feats, "oid": f"b-{i}", "action": "skip",
+                "pnl": 0.0, "cost": 0.0, "outcome": "win" if won else "loss",
+            }))
+    flush(float("inf"))
+    n = len(live_pnls)
+    tot = sum(live_pnls)
+    sh = sum(shadow_pnls)
+    pf, dd = _pf_and_dd(live_pnls)
+    _, sh_dd = _pf_and_dd(shadow_pnls)
+    return {
+        "mode": mode, "trades": n, "pnl": tot, "cost": live_cost,
+        "roi": None if live_cost <= 0 else tot / live_cost,
+        "pf": pf, "max_dd": dd,
+        "shadow_pnl": sh, "shadow_cost": shadow_cost,
+        "shadow_roi": None if shadow_cost <= 0 else sh / shadow_cost,
+        "shadow_dd": sh_dd, "actions": actions,
+    }
+
+
+def print_calibration(rows, outcome, settle_ts_map, *, theta: float, stake: float, tz_name: str = DEFAULT_TZ) -> dict:
+    examples = cal.iter_counterfactuals(rows, outcome, settle_ts_map, tz_name=tz_name, theta=theta, stake=stake)
+    # only fully settled, walk-forward (all historical rows whose window ended)
+    import time as _t
+    examples = cal.asof(examples, _t.time())
+    # one last snapshot per slug+side so we don't overweight chatty markets
+    latest = {}
+    for e in examples:
+        latest[(e["market_slug"], e["side"])] = e
+    unique = list(latest.values())
+    doc = cal.report(unique)
+    print("\nPhase 6 calibration (fee-aware CF at the ask, last snapshot per slug+side, walk-forward)")
+    o = doc["overall"]
+    print(f"  overall n={o['n']}  Brier={o['brier']}  log_loss={o['log_loss']}  CF P&L={o['pnl']:+.2f} (stake ${stake:.2f})")
+    print("  reliability: bucket   n   mean_p  realized    gap     pnl")
+    for b in o.get("buckets") or []:
+        print(f"    {b['bucket']:>8} {b['n']:5d}  {b['mean_p']:.3f}   {b['realized']:.3f}  {b['gap']:+.3f}  {b['pnl']:+8.2f}")
+    print("  per asset|horizon:")
+    for g in doc.get("by_asset_horizon") or []:
+        print(f"    {g['key']:<16} n={g['n']:5d}  Brier={g['brier']}  log_loss={g['log_loss']}  pnl={g['pnl']:+.2f}")
+    return doc
+
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", nargs="*", default=["data/evaluations.csv"])
@@ -415,6 +541,21 @@ def main(argv=None):
             print(f"{res['strategy']:16} {res['policy']:10} {res['trades']:6d} {res['wins']:5d} {res['win_rate']*100:5.1f}% "
                   f"{res['pnl']:+9.2f} {res['pf']:>6} {res['max_dd']:+8.2f} {res['blocked']:7d} "
                   f"{res['blocked_cooldown']:5d} {res['blocked_session']:5d} {res['guard_halts']:5d} {res['entries_locked']:5d}")
+
+    theta = 0.095
+    print_calibration(rows, outcome, settle_ts_map, theta=theta, stake=a.stake)
+    print("\nPhase 6 bandit walk-forward (baseline strategy filter, fee-aware CF P&L, zero lookahead)")
+    print(f"{'mode':8} {'trades':>6} {'pnl':>9} {'cost':>9} {'ROI':>8} {'PF':>6} {'maxDD':>8}  "
+          f"{'sh_pnl':>9} {'sh_ROI':>8}  actions")
+    for mode in ("shadow", "active"):
+        res = run_bandit_walkforward(
+            rows, outcome, settle_ts_map, stake=a.stake, min_edge=a.min_edge, theta=theta, mode=mode,
+        )
+        roi = "—" if res["roi"] is None else f"{res['roi']*100:7.2f}%"
+        sroi = "—" if res["shadow_roi"] is None else f"{res['shadow_roi']*100:7.2f}%"
+        acts = " ".join(f"{k}={v}" for k, v in res["actions"].items())
+        print(f"{res['mode']:8} {res['trades']:6d} {res['pnl']:+9.2f} {res['cost']:9.2f} {roi:>8} "
+              f"{res['pf']:>6} {res['max_dd']:+8.2f}  {res['shadow_pnl']:+9.2f} {sroi:>8}  {acts}")
     return 0
 
 

@@ -75,3 +75,14 @@ See ARCHITECTURE.md › Profit lock and OPERATIONS.md › Profit lock settings. 
 - Before evaluating a row at time `t`, only simulated trades whose `settle_ts ≤ t` are settled into `PatternStore`.
 - Compares **Pattern OFF** vs **Pattern ON** across every strategy (trades, win%, P&L, avg, profit factor, max drawdown, and shadow-mode counterfactuals).
 - Outcome is approximated from the last row with ≤ 30 s left; use it to compare filters and adaptive gating on the same tape without lookahead bias.
+- Phase 6 adds a fee-aware calibration report (model P vs realized frequency, Brier, log loss, per asset|horizon) and a Thompson bandit walk-forward (shadow vs active) on the same tape.
+
+## Rules lab (Phase 6)
+
+Analyst (human or agent) rule proposals are **not** a new strategy and do not replace the strategy promotion gate.
+
+- DSL: conditions on allowlisted context features (`asset`, `horizon`, `hour_bucket`, `vol_regime`, `distance_bucket`, `edge_bucket`, `minutes_left`, …) → `skip` or `size_mult` in `[0.25, 1.50]`. Forbidden keys: `mode`, `daily_loss_limit_pct`, `max_per_bet_usd`, `rolling_guard`, `halt`.
+- Submit: `scripts/propose_rule.py --name … --action skip --when 'horizon=eq:5m,vol_regime=eq:high,minutes_left=lt:3' --rationale '…'` or the Rules Lab form. The rule is walk-forward backtested on stored evaluations, then placed in shadow.
+- Promotion: ≥ 30 live shadow trades, better net P&L than the champion, drawdown not worse. Auto-promote is off; auto-demote is on. Manual approve/reject is on `/rules-lab`.
+- When an LLM key is added later, `reviewer.py` will enqueue `rule_proposals` onto the same queue.
+- Snapshot for the analyst: `PYTHONPATH=src .venv/bin/python scripts/analyst_snapshot.py --data /opt/polymarket-bot/data`.

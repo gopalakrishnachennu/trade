@@ -327,6 +327,19 @@ def run_review(data_dir: Path, trigger: str, bus=None, *, llm_call=None) -> dict
         tweaks = clamp_tweaks(reply.get("param_tweaks"), cur_params, settings["max_step_frac"])
         if tweaks:
             apply_tweaks(data_dir, tweaks)
+        # Same queue the human analyst uses; safe no-op until a key is added and the LLM emits rule_proposals.
+        queued_rules = []
+        for rp in (reply.get("rule_proposals") or []):
+            try:
+                from . import rules_lab as _rl
+                rule_rec = _rl.enqueue_proposal(data_dir, rp, actor=f"reviewer/{source}",
+                                                rationale=str(rp.get("rationale") or reply.get("rationale") or ""),
+                                                source="llm")
+                queued_rules.append(rule_rec.get("id"))
+            except Exception:
+                continue
+        if queued_rules:
+            rec["rule_proposals"] = queued_rules
         g = gate(metrics, active["active"], reply["suggested_active"], settings,
                  float(doc.get("starting_equity") or 1000.0), last_switch_ts(data_dir))
         rec.update(source=source, provider=provider, model=model, ranking=reply["ranking"],

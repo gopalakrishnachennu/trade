@@ -38,3 +38,13 @@ Anything written under `data/` should either be safe to grow forever or be cover
 ## Change the deploy
 
 Keep the same URL and token. Keep Caddy in front of uvicorn on 127.0.0.1. Never put keys in systemd units or in git.
+
+## Propose an analyst rule
+
+1. Inspect `scripts/analyst_snapshot.py` output (attribution, calibration, worst/best contexts, bandit shadow, active rules).
+2. Submit with `scripts/propose_rule.py` or POST `/api/rules-lab/propose` (header token). The DSL is validated against `ALLOWED_FIELDS` / `ALLOWED_OPS` in `rules_lab.py` — do not add fields that touch mode, caps, or HALT.
+3. The proposal is walk-forward backtested automatically and enters shadow. Promote only through the gate or a manual approve on `/rules-lab`. Auto-promote stays off unless the operator turns it on in Controls.
+
+## Add a learning layer
+
+Compose it in `learning_runtime.decisions_for` / `compose_learning` rather than replacing `PatternStore`. Shadow/off must not change `passed` or the live multiplier. Skip via `passed=False`. Hard caps stay last in `size_order`. Add a Controls `Field` (`off|shadow|active`) and tests that the layer cannot loosen INVARIANTS 1, 2, 3, 7 and 13.

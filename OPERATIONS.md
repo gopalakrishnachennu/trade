@@ -130,3 +130,22 @@ PYTHONPATH=src .venv/bin/python scripts/dashboard_data.py -o data/dashboard.json
 - `/api/export/decisions.csv`: proposals, gate decisions and switches.
 - `/api/report/daily[?day=YYYY-MM-DD]`: the daily text report.
 - `PYTHONPATH=src .venv/bin/python scripts/replay.py --all`: zero-lookahead walk-forward replay comparing Pattern OFF vs Pattern ON across archived and live evaluations.
+
+## Phase 6 learning controls and analyst tools
+
+All learning layers default to **shadow** and can be flipped from Controls (Terminal) without a redeploy: Loss attribution, Counterfactual, Calibration, Contextual bandit, Rules lab mode. `cf_weight` (default 0.25) weights the counterfactual stream below real fills.
+
+- Dashboard: `/attribution` (LOSSES) and `/rules-lab` (proposals, backtests, shadow status, promotion history). Calibration and the bandit shadow book are sections on `/patterns`.
+- Analyst snapshot (run on the droplet, from the repo):
+
+      PYTHONPATH=src .venv/bin/python scripts/analyst_snapshot.py --data /opt/polymarket-bot/data
+
+- Propose a rule:
+
+      PYTHONPATH=src .venv/bin/python scripts/propose_rule.py \
+        --name skip-high-vol-late-5m --action skip \
+        --when 'horizon=eq:5m,vol_regime=eq:high,minutes_left=lt:3' \
+        --rationale 'late 5m high-vol entries have been fee-eaten' \
+        --data /opt/polymarket-bot/data
+
+- Learning backfill and calibration refresh run in the execution process on startup, **after** `HeartbeatKeeper` has started (the watchdog's first-beat grace is 8s; ingesting ~48k evaluations can take longer). They must not trip HALT; if they fail, check `data/runtime/events.jsonl` and the execution log. Rollback is the same as any other deploy (code-only tarball + the pre-deploy full backup).

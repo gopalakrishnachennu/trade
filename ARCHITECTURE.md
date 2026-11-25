@@ -296,6 +296,16 @@ A critical system probe must fail on **two consecutive checks** before it latche
 - `PatternStore` updates hierarchical Beta-Binomial win-rate and shrunk ROI/EV posteriors online after every settlement (idempotent on `order_id`).
 - Controlled via `pattern_mode` (`off | shadow | active`, default `shadow`) and `pattern_min_samples` (default 20). In `active` mode, scales Kelly within `[0.25×, 1.50×]` inside all hard caps and skips contexts with `n ≥ min_samples` and `post_ev ≤ −2 %` (`ev_ucb < 0`). Served on `/patterns` and `/api/patterns`.
 
+### Phase 6 learning (extends the pattern layer; does not replace it)
+
+- **Attribution.** `attribution.py` tags every settled trade from stored features plus the reconstructed index path (last-minute flip, against-trend). Tags are observational. Backfill writes `trade_attribution`. UI: `/attribution`.
+- **Counterfactual stream.** `calibration.iter_counterfactuals` scores each evaluation (including NO TRADE) net of taker fees at the ask. `PatternStore.update_counterfactual` is a parallel, lower-weighted stream (`cf_weight`, default 0.25). Examples are visible only after `settle_ts` (zero lookahead).
+- **Calibration.** Pure-Python isotonic (PAV) or Platt per asset|horizon, report at `data/patterns/calibration.json`. Active mode is tighten-only (`learning_runtime.tighten_with_calibration`).
+- **Contextual bandit.** `bandit.py` Thompson-samples skip / 0.5× / 1× / 1.5× Kelly over context buckets, shrinking toward the Beta/EV pattern prior. State: `data/patterns/bandit.json`. Default shadow. `compose_learning` is conservative (min multiplier, skip wins). Hard caps still apply last in `size_order`.
+- **Rules lab.** `rules_lab.py` is a separate proposal queue (`data/rules_lab/queue.json`) from the strategy reviewer, but shares the same promotion-gate spirit and is the single write path (`enqueue_proposal`) the LLM reviewer will use when a key exists. UI: `/rules-lab`. Scripts: `scripts/analyst_snapshot.py`, `scripts/propose_rule.py`.
+- **Runtime glue.** `learning_runtime.py` composes decisions, updates on settlement, backfills attribution, ingests CF incrementally (`cf_cursor_ts`), and refreshes calibration on execution startup. Failures never trip HALT.
+- All of the above are versioned Controls fields (`attribution_mode`, `counterfactual_mode`, `cf_weight`, `calibration_mode`, `calibration_method`, `bandit_mode`, `rules_lab_mode`, plus auto-promote/demote and min shadow trades).
+
 The KPI strip shows the target, peak, floor and mode. The equity chart draws the target line, a stepped floor line and the peak.
 
 ### Strategies, shadow books, reviewer, gate

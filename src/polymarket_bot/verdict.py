@@ -18,6 +18,9 @@ RULE_LABELS = {
     "min_edge_after_fees": "Edge ≥ min",
     "strategy": "Active strategy filter",
     "pattern": "Pattern context",
+    "bandit": "Contextual bandit",
+    "rule": "Analyst rule",
+    "calibration": "Probability calibration",
 }
 
 

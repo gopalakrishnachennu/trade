@@ -113,6 +113,32 @@ def vol_regime_for(asset: str, annualized_vol: Optional[float], cfg=None) -> str
     return "high"
 
 
+def minutes_bucket_for(minutes_left: Optional[float]) -> str:
+    if minutes_left is None:
+        return "unknown"
+    m = float(minutes_left)
+    if m < 2:
+        return "<2m"
+    if m < 5:
+        return "2-5m"
+    if m < 15:
+        return "5-15m"
+    return ">=15m"
+
+
+def edge_bucket_for(edge: Optional[float]) -> str:
+    if edge is None:
+        return "unknown"
+    e = float(edge)
+    if e < 0.02:
+        return "<2%"
+    if e < 0.04:
+        return "2-4%"
+    if e < 0.08:
+        return "4-8%"
+    return ">=8%"
+
+
 def extract_features(
     row: Any,
     *,
@@ -173,13 +199,15 @@ def extract_features(
         "depth_usd": depth_usd,
         "strategy": str(strategy or g("strategy") or "baseline"),
         "passed": g("passed"),
+        "minutes_bucket": minutes_bucket_for(minutes_left),
+        "edge_bucket": edge_bucket_for(edge),
     }
 
 
 @dataclass
 class BucketStat:
-    n: int = 0
-    wins: int = 0
+    n: float = 0.0
+    wins: float = 0.0
     sum_roi: float = 0.0
     sum_roi_sq: float = 0.0
     sum_pnl: float = 0.0
@@ -211,8 +239,8 @@ class BucketStat:
     @classmethod
     def from_dict(cls, d: dict) -> "BucketStat":
         return cls(
-            n=int(d.get("n") or 0),
-            wins=int(d.get("wins") or 0),
+            n=float(d.get("n") or 0),
+            wins=float(d.get("wins") or 0),
             sum_roi=float(d.get("sum_roi") or 0.0),
             sum_roi_sq=float(d.get("sum_roi_sq") or 0.0),
             sum_pnl=float(d.get("sum_pnl") or 0.0),
@@ -240,7 +268,13 @@ class PatternStore:
             "distance_bucket": {}, # <0.25σ .. >=1.5σ
             "weekday": {},         # Mon..Sun
             "strategy": {},        # baseline..
+            "edge_bucket": {},
+            "minutes_bucket": {},
         }
+        self.cf_global = BucketStat()
+        self.cf_dims: dict[str, dict[str, BucketStat]] = {k: {} for k in self.dims}
+        self.cf_seen: set[str] = set()
+        self.cf_cursor_ts: float = 0.0
         self.seen_ids: set[str] = set()
         self.recent_trades: list[dict[str, Any]] = []
         self.shadow_stats: dict[str, Any] = {
@@ -289,6 +323,8 @@ class PatternStore:
         self._bucket("distance_bucket", str(feat.get("distance_bucket") or "unknown")).add(won, roi, pnl, cost, mp)
         self._bucket("weekday", str(feat.get("weekday") or "Mon")).add(won, roi, pnl, cost, mp)
         self._bucket("strategy", str(feat.get("strategy") or "baseline")).add(won, roi, pnl, cost, mp)
+        self._bucket("edge_bucket", str(feat.get("edge_bucket") or edge_bucket_for(_f(feat.get("edge"))))).add(won, roi, pnl, cost, mp)
+        self._bucket("minutes_bucket", str(feat.get("minutes_bucket") or minutes_bucket_for(_f(feat.get("minutes_left"))))).add(won, roi, pnl, cost, mp)
 
         rec = {
             **feat,
@@ -313,6 +349,83 @@ class PatternStore:
         self.updated_at = time.time()
         return True
 
+    def _cf_bucket(self, dim: str, key: str) -> BucketStat:
+        d = self.cf_dims.setdefault(dim, {})
+        if key not in d:
+            d[key] = BucketStat()
+        return d[key]
+
+    def update_counterfactual(self, feat: dict[str, Any], *, source_id: str, pnl_usd: float,
+                              cost_usd: float, outcome: str, weight: float = 0.25) -> bool:
+        """Weighted evidence from an evaluation that was not (or might not have been) filled.
+
+        Separate stream: does not change real-fill posteriors. Idempotent on source_id.
+        """
+        sid = str(source_id or "")
+        if not sid or sid in self.cf_seen or sid in self.seen_ids:
+            return False
+        self.cf_seen.add(sid)
+        w = max(0.0, float(weight))
+        if w <= 0:
+            return False
+        cost = max(0.01, float(cost_usd or 0.0))
+        pnl = float(pnl_usd or 0.0)
+        won = (outcome == "win") or (pnl > 0)
+        roi = max(-1.0, min(20.0, pnl / cost))
+        mp = _f(feat.get("model_prob"))
+        asset = str(feat.get("asset") or "").lower()
+        horizon = str(feat.get("horizon") or "")
+        hb = str(feat.get("hour_bucket") or "00-03h")
+        keys = {
+            "context": f"{asset}|{horizon}|{hb}",
+            "asset_horizon": f"{asset}|{horizon}",
+            "hour_cell": f"{asset}|{horizon}|{int(feat.get('hour_et') or 0):02d}",
+            "hour_bucket": hb,
+            "vol_regime": str(feat.get("vol_regime") or "unknown"),
+            "distance_bucket": str(feat.get("distance_bucket") or "unknown"),
+            "weekday": str(feat.get("weekday") or "Mon"),
+            "strategy": str(feat.get("strategy") or "baseline"),
+            "edge_bucket": str(feat.get("edge_bucket") or edge_bucket_for(_f(feat.get("edge")))),
+            "minutes_bucket": str(feat.get("minutes_bucket") or minutes_bucket_for(_f(feat.get("minutes_left")))),
+        }
+        def _add(st: BucketStat) -> None:
+            st.n += w
+            if won:
+                st.wins += w
+            st.sum_roi += roi * w
+            st.sum_roi_sq += (roi * roi) * w
+            st.sum_pnl += pnl * w
+            st.sum_cost += cost * w
+            if mp is not None and math.isfinite(mp):
+                st.sum_p += mp * w
+        _add(self.cf_global)
+        for dim, key in keys.items():
+            _add(self._cf_bucket(dim, key))
+        self.updated_at = time.time()
+        return True
+
+    def blended_stat(self, dim: Optional[str], key: Optional[str], cf_weight: float = 0.0) -> BucketStat:
+        """Real fills plus cf_weight × the counterfactual stream (cf_weight already applied at ingest if desired).
+
+        `cf_weight` here is an extra scale on the stored CF stream (which was already weighted
+        at ingest). Pass 1.0 to use the ingested weights as-is when mode is active; 0.0 to
+        ignore CF (shadow/off).
+        """
+        real = self.global_stat if not dim else (self.dims.get(dim, {}).get(key) or BucketStat())
+        if cf_weight <= 0:
+            return real
+        cf = self.cf_global if not dim else (self.cf_dims.get(dim, {}).get(key) or BucketStat())
+        w = float(cf_weight)
+        return BucketStat(
+            n=real.n + w * cf.n,
+            wins=real.wins + w * cf.wins,
+            sum_roi=real.sum_roi + w * cf.sum_roi,
+            sum_roi_sq=real.sum_roi_sq + w * cf.sum_roi_sq,
+            sum_pnl=real.sum_pnl + w * cf.sum_pnl,
+            sum_cost=real.sum_cost + w * cf.sum_cost,
+            sum_p=real.sum_p + w * cf.sum_p,
+        )
+
     def _global_priors(self) -> tuple[float, float, float]:
         g = self.global_stat
         w0 = (2.0 + g.wins) / (4.0 + g.n)
@@ -324,8 +437,9 @@ class PatternStore:
             s0_sq = 1.0
         return w0, mu0, s0_sq
 
-    def posterior(self, dim: str, key: str, *, parent_wr: Optional[float] = None, parent_ev: Optional[float] = None) -> dict[str, Any]:
-        st = self.dims.get(dim, {}).get(key) or BucketStat()
+    def posterior(self, dim: str, key: str, *, parent_wr: Optional[float] = None, parent_ev: Optional[float] = None,
+                  cf_weight: float = 0.0) -> dict[str, Any]:
+        st = self.blended_stat(dim, key, cf_weight)
         w0, mu0, s0_sq = self._global_priors()
         pw = w0 if parent_wr is None else parent_wr
         pe = mu0 if parent_ev is None else parent_ev
@@ -360,11 +474,13 @@ class PatternStore:
             "cost_usd": round(st.sum_cost, 2),
         }
 
-    def context_posterior(self, asset: str, horizon: str, hour_bucket: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    def context_posterior(self, asset: str, horizon: str, hour_bucket: str,
+                          cf_weight: float = 0.0) -> tuple[dict[str, Any], dict[str, Any]]:
         a, h = asset.lower(), horizon
-        parent = self.posterior("asset_horizon", f"{a}|{h}")
+        parent = self.posterior("asset_horizon", f"{a}|{h}", cf_weight=cf_weight)
         child = self.posterior("context", f"{a}|{h}|{hour_bucket}",
-                               parent_wr=parent["post_wr"], parent_ev=parent["post_ev"])
+                               parent_wr=parent["post_wr"], parent_ev=parent["post_ev"],
+                               cf_weight=cf_weight)
         return child, parent
 
     def evaluate(
@@ -377,6 +493,7 @@ class PatternStore:
         max_mult: float = 1.50,
         skip_ev_threshold: float = -0.02,
         record_shadow: bool = False,
+        cf_weight: float = 0.0,
     ) -> dict[str, Any]:
         """Evaluate adaptive pattern adjustment / skip for one candidate signal."""
         if mode == "off":
@@ -388,7 +505,7 @@ class PatternStore:
         asset = str(feat.get("asset") or "").lower()
         horizon = str(feat.get("horizon") or "")
         hb = str(feat.get("hour_bucket") or hour_bucket_for(int(feat.get("hour_et") or 0)))
-        child, parent = self.context_posterior(asset, horizon, hb)
+        child, parent = self.context_posterior(asset, horizon, hb, cf_weight=cf_weight)
 
         if child["n"] >= min_samples:
             chosen = child
@@ -555,6 +672,15 @@ class PatternStore:
                 "distance_bucket": _table("distance_bucket"),
                 "weekday": _table("weekday"),
                 "strategy": _table("strategy"),
+                "edge_bucket": _table("edge_bucket"),
+                "minutes_bucket": _table("minutes_bucket"),
+            },
+            "cf": {
+                "n": round(self.cf_global.n, 2),
+                "wins": round(self.cf_global.wins, 2),
+                "pnl_usd": round(self.cf_global.sum_pnl, 2),
+                "cost_usd": round(self.cf_global.sum_cost, 2),
+                "cursor_ts": self.cf_cursor_ts,
             },
             "shadow_stats": dict(self.shadow_stats),
             "recent_trades": list(reversed(self.recent_trades[-50:])),
@@ -562,7 +688,7 @@ class PatternStore:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "updated_at": self.updated_at,
             "prior_strength": self.prior_strength,
             "global": self.global_stat.to_dict(),
@@ -570,6 +696,10 @@ class PatternStore:
             "seen_ids": sorted(self.seen_ids)[-5000:],
             "recent_trades": self.recent_trades[-120:],
             "shadow_stats": self.shadow_stats,
+            "cf_global": self.cf_global.to_dict(),
+            "cf_dims": {dim: {k: v.to_dict() for k, v in mp.items()} for dim, mp in self.cf_dims.items()},
+            "cf_seen": sorted(self.cf_seen)[-20000:],
+            "cf_cursor_ts": self.cf_cursor_ts,
         }
 
     @classmethod
@@ -585,6 +715,14 @@ class PatternStore:
         ps.recent_trades = list(raw.get("recent_trades") or [])[-120:]
         if isinstance(raw.get("shadow_stats"), dict):
             ps.shadow_stats.update(raw["shadow_stats"])
+        if isinstance(raw.get("cf_global"), dict):
+            ps.cf_global = BucketStat.from_dict(raw["cf_global"])
+        for dim, mp in (raw.get("cf_dims") or {}).items():
+            if isinstance(mp, dict):
+                ps.cf_dims.setdefault(dim, {})
+                ps.cf_dims[dim] = {k: BucketStat.from_dict(v) for k, v in mp.items() if isinstance(v, dict)}
+        ps.cf_seen = set(raw.get("cf_seen") or [])
+        ps.cf_cursor_ts = float(raw.get("cf_cursor_ts") or 0.0)
         return ps
 
 

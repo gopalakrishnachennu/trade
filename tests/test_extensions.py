@@ -376,7 +376,9 @@ class NewApiTests(unittest.TestCase):
         self.assertEqual(set(r.json()), {"status", "halted"})
         self.assertEqual(self.client.get("/assets/common.js").status_code, 200)
         for path in ("/metrics", "/api/health", "/api/archives", "/api/strategies", "/api/integrations", "/health",
-                     "/strategies", "/integrations", "/archives", "/api/export/trades.csv"):
+                     "/strategies", "/integrations", "/archives", "/api/export/trades.csv",
+                     "/patterns", "/api/patterns", "/attribution", "/api/attribution",
+                     "/rules-lab", "/api/rules-lab"):
             self.assertEqual(self.client.get(path).status_code, 401, path)
             self.assertEqual(self.client.get(f"{path}?token={self.T}").status_code, 200, path)
         m = self.client.get(f"/metrics?token={self.T}").text
@@ -386,7 +388,8 @@ class NewApiTests(unittest.TestCase):
     def test_writes_need_header(self):
         for path in ("/api/archives/run", "/api/strategies/review", "/api/strategies/settings",
                      "/api/integrations/openai", "/api/integrations/reviewer", "/api/integrations/openai/test",
-                     "/api/archives/part-0001-20260101-20260101.tar.zst/ack", "/api/strategies/proposals/x/approve"):
+                     "/api/archives/part-0001-20260101-20260101.tar.zst/ack", "/api/strategies/proposals/x/approve",
+                     "/api/rules-lab/propose", "/api/rules-lab/x/approve"):
             self.assertEqual(self.client.post(f"{path}?token={self.T}", json={}).status_code, 403, path)
 
     def test_integration_key_never_returned(self):

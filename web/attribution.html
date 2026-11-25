@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM US · LOSSES / ATTRIBUTION</title><link rel="icon" href="data:,"><link rel="stylesheet" href="assets/common.css">
+<style>
+.bars{display:flex;flex-direction:column;gap:6px}
+.bar{display:grid;grid-template-columns:180px 1fr 90px 90px 90px;gap:8px;align-items:center;font-size:12px}
+.bar .track{height:10px;background:#1a1f28;border:1px solid #2a3140;position:relative}
+.bar .fill{height:100%;background:var(--red)}
+.bar .fill.win{background:var(--green)}
+.scroll{max-height:440px;overflow:auto}
+</style>
+</head><body>
+<main>
+<h1>LOSSES / ATTRIBUTION <span class="mut" id="sum" style="font-weight:400;letter-spacing:0"></span></h1>
+<div class="panel" id="top"></div>
+<h2>P&amp;L AND FEES BY PRIMARY REASON</h2>
+<div class="panel"><div class="bars" id="bars"></div></div>
+<h2>TAG COUNTS (A TRADE CAN CARRY MORE THAN ONE TAG)</h2>
+<div class="panel"><div class="scroll"><table id="tags"><thead><tr>
+  <th>Tag</th><th class="n">n</th><th class="n">W–L</th><th class="n">P&amp;L</th><th class="n">Fees</th><th class="n">Fees on losers</th>
+</tr></thead><tbody></tbody></table></div></div>
+<h2>SETTLED TRADES</h2>
+<div class="panel"><div class="scroll"><table id="rows"><thead><tr>
+  <th>Time ET</th><th>Market</th><th>Side</th><th>Outcome</th><th>Primary reason</th><th>Tags</th><th class="n">P&amp;L</th><th class="n">Fees</th><th>Detail</th>
+</tr></thead><tbody></tbody></table></div></div>
+</main>
+<script src="assets/common.js"></script>
+<script>
+function money(v){ return PM.susd(v); }
+function render(d) {
+  const mode = (d.config || {}).mode || "shadow";
+  document.getElementById("sum").textContent = `· ${mode.toUpperCase()} · ${d.n||0} tagged · ${d.wins||0}W / ${d.losses||0}L · fees on losers ${money(d.fees_on_losers)}`;
+  document.getElementById("top").innerHTML = `<div class="kv">
+    <span>Tagged trades</span><span><b>${d.n||0}</b> · <span class="pos">${d.wins||0} wins</span> / <span class="neg">${d.losses||0} losses</span></span>
+    <span>Net P&amp;L</span><span class="${(d.pnl||0)>=0?"pos":"neg"}"><b>${money(d.pnl)}</b></span>
+    <span>Fees paid</span><span>${money(d.fees)} total · <span class="neg">${money(d.fees_on_losers)} on losers</span></span>
+    <span>Mode</span><span>Deterministic tags from stored features + the index path. Attribution never changes sizing. Switch via Controls → Loss attribution (off / shadow / active; active = same tags, shown live).</span>
+  </div>`;
+  const maxAbs = Math.max(1, ...((d.by_primary||[]).map(r => Math.abs(r.pnl||0))));
+  document.getElementById("bars").innerHTML = (d.by_primary||[]).filter(r => r.n).map(r => {
+    const w = Math.max(2, Math.round(100 * Math.abs(r.pnl||0) / maxAbs));
+    const win = (r.pnl||0) >= 0;
+    return `<div class="bar">
+      <div><b>${PM.esc(r.label || r.reason)}</b><div class="mut">${r.n} trades · ${r.wins}W–${r.losses}L</div></div>
+      <div class="track"><div class="fill ${win?"win":""}" style="width:${w}%"></div></div>
+      <div class="n ${win?"pos":"neg"}">${money(r.pnl)}</div>
+      <div class="n mut">${money(r.fees)}</div>
+      <div class="n neg">${money(r.fees_on_losers)}</div>
+    </div>`;
+  }).join("") || `<span class="mut">No tagged trades yet. Settlements are tagged automatically after each fill closes.</span>`;
+  document.querySelector("#tags tbody").innerHTML = (d.by_tag||[]).filter(r => r.n).map(r => `<tr>
+    <td><b>${PM.esc(r.label || r.reason)}</b></td>
+    <td class="n">${r.n}</td><td class="n">${r.wins}–${r.losses}</td>
+    <td class="n ${(r.pnl||0)>=0?"pos":"neg"}">${money(r.pnl)}</td>
+    <td class="n">${money(r.fees)}</td>
+    <td class="n neg">${money(r.fees_on_losers)}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="mut">No tags yet.</td></tr>`;
+  document.querySelector("#rows tbody").innerHTML = (d.rows||[]).slice().reverse().map(r => `<tr>
+    <td class="mut">${PM.et(typeof r.ts === "number" ? r.ts : Date.parse(r.ts)/1000)}</td>
+    <td><b>${PM.esc((r.asset||"").toUpperCase())}</b> ${PM.esc(r.horizon||"")}</td>
+    <td class="${r.side==="up"?"pos":"neg"}">${PM.esc((r.side||"").toUpperCase())}</td>
+    <td class="${r.outcome==="win"?"pos":"neg"}">${PM.esc((r.outcome||"").toUpperCase())}</td>
+    <td><b>${PM.esc(r.label || r.primary || "—")}</b></td>
+    <td class="mut">${PM.esc((r.tags||[]).join(", "))}</td>
+    <td class="n ${(r.pnl_usd||0)>=0?"pos":"neg"}">${money(r.pnl_usd)}</td>
+    <td class="n">${money(r.fees_usd)}</td>
+    <td class="mut" style="white-space:normal;max-width:360px">${PM.esc(r.detail||"")}</td>
+  </tr>`).join("") || `<tr><td colspan="9" class="mut">No settled trades.</td></tr>`;
+}
+async function load(){
+  try { render(await PM.get("/api/attribution")); }
+  catch(e){ document.getElementById("top").innerHTML = `<span class="neg">${PM.esc(e.message)}</span>`; }
+}
+load(); setInterval(load, 15000);
+</script>
+</body></html>

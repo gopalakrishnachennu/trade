@@ -295,9 +295,17 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
 
     from .. import strategies as strat
     from .. import patterns as pat
+    from .. import bandit as ban
+    from .. import learning_runtime as learn
+    from .. import calibration as cal
     watcher = _ControlsWatcher(cfg, bus, "engine")
     active_w = strat.ActiveWatcher(cfg.sqlite_path.parent)
     pat_w = pat.PatternWatcher(cfg.sqlite_path.parent, prior_strength=cfg.pattern_prior_strength)
+    data_dir = cfg.sqlite_path.parent
+    bholder = [ban.load_bandit(data_dir, prior_strength=cfg.pattern_prior_strength)]
+    b_mtime = [None]
+    cholder = [cal.load_report(data_dir)]
+    c_mtime = [None]
     engine = RulesEngine(cfg)
     store = Store(cfg.sqlite_path, cfg.trades_csv, cfg.evaluations_csv, cfg.equity_csv)
     recent: list[dict] = []
@@ -345,41 +353,81 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             grid = []
             act = active_w.poll()
             pstore = pat_w.poll()
+            try:
+                bm = ban.bandit_path(data_dir).stat().st_mtime_ns
+            except Exception:
+                bm = None
+            if bm != b_mtime[0]:
+                b_mtime[0] = bm
+                bholder[0] = ban.load_bandit(data_dir, prior_strength=eff.pattern_prior_strength)
+            try:
+                cm = cal.calibrator_path(data_dir).stat().st_mtime_ns
+            except Exception:
+                cm = None
+            if cm != c_mtime[0]:
+                c_mtime[0] = cm
+                cholder[0] = cal.load_report(data_dir)
 
             def apply_strategy(s):
+                cal_info = learn.tighten_with_calibration(s, eff, cholder[0])
+                if cal_info.get("applied") and cal_info.get("sized_p") is not None:
+                    s.model_prob = cal_info["sized_p"]
+                    if cal_info.get("cal_edge") is not None:
+                        s.edge_after_fees = cal_info["cal_edge"]
                 sd = signal_to_dict(s)
                 base_checks = list(sd.get("rule_checks") or [])
                 passed, checks = strat.evaluate(act["active"], act["params"], sd, eff.min_edge)
                 feat = pat.extract_features(sd, ts=now_unix, tz_name=tz, cfg=eff, strategy=act["active"])
-                pdec = pstore.evaluate(
-                    feat,
-                    mode=eff.pattern_mode,
-                    min_samples=eff.pattern_min_samples,
-                    min_mult=eff.pattern_min_mult,
-                    max_mult=eff.pattern_max_mult,
-                    skip_ev_threshold=eff.pattern_skip_ev_threshold,
-                )
-                if eff.pattern_mode != "off" and checks:
-                    ev_str = "—" if pdec["post_ev"] is None else f"{pdec['post_ev']:+.1%}"
-                    val_str = f"{ev_str} ({pdec['would_mult']:.2f}×, n={pdec['n']})"
-                    thr_str = f"n≥{eff.pattern_min_samples} · {eff.pattern_mode}"
-                    checks = list(checks) + [{
-                        "name": "pattern",
-                        "passed": pdec["passed"],
-                        "detail": pdec["detail"],
-                        "value": val_str,
-                        "threshold": thr_str,
-                    }]
-                    if not pdec["passed"]:
+                layer = learn.decisions_for(feat, eff, pstore, bholder[0], data_dir, record_shadow=False)
+                pdec, bdec, rdec, composed = layer["pattern"], layer["bandit"], layer["rule"], layer["composed"]
+                if checks is not None:
+                    checks = list(checks)
+                    if eff.pattern_mode != "off":
+                        ev_str = "—" if pdec["post_ev"] is None else f"{pdec['post_ev']:+.1%}"
+                        checks.append({
+                            "name": "pattern", "passed": pdec["passed"], "detail": pdec["detail"],
+                            "value": f"{ev_str} ({pdec['would_mult']:.2f}×, n={pdec['n']})",
+                            "threshold": f"n≥{eff.pattern_min_samples} · {eff.pattern_mode}",
+                        })
+                    if getattr(eff, "bandit_mode", "off") != "off":
+                        checks.append({
+                            "name": "bandit", "passed": bdec["passed"] if eff.bandit_mode == "active" else True,
+                            "detail": bdec.get("detail"),
+                            "value": f"{bdec.get('would_action')} ({bdec.get('would_mult')}×) · {eff.bandit_mode}",
+                            "threshold": "Thompson · fee-aware ROI",
+                        })
+                    if getattr(eff, "rules_lab_mode", "off") != "off" and rdec.get("detail"):
+                        checks.append({
+                            "name": "rule", "passed": rdec.get("passed", True) if eff.rules_lab_mode == "active" else True,
+                            "detail": rdec.get("detail"),
+                            "value": rdec.get("would_action") or "noop",
+                            "threshold": f"rules_lab {eff.rules_lab_mode}",
+                        })
+                    if getattr(eff, "calibration_mode", "off") != "off":
+                        checks.append({
+                            "name": "calibration",
+                            "passed": cal_info.get("passed", True) if eff.calibration_mode == "active" else True,
+                            "detail": cal_info.get("detail"),
+                            "value": None if cal_info.get("cal_p") is None else f"{cal_info['cal_p']:.3f}",
+                            "threshold": f"{eff.calibration_mode} · tighten-only",
+                        })
+                    if eff.pattern_mode == "active" and not pdec["passed"]:
+                        passed = False
+                    if eff.bandit_mode == "active" and not bdec.get("passed", True):
+                        passed = False
+                    if eff.rules_lab_mode == "active" and not rdec.get("passed", True):
+                        passed = False
+                    if getattr(eff, "calibration_mode", "off") == "active" and cal_info.get("fail_edge"):
                         passed = False
                 sd.update({"base_passed": bool(sd.get("passed")), "base_checks": base_checks,
                            "passed": passed, "rule_checks": checks,
                            "strategy": act["active"], "strategy_version": act.get("version", 0),
-                           "pattern": pdec, "pattern_features": feat})
+                           "pattern": pdec, "bandit": bdec, "learning": composed,
+                           "pattern_features": feat})
                 if not passed and not sd.get("reasons"):
                     sd["reasons"] = [c.get("detail") or c.get("name") for c in checks if not c.get("passed")]
-                elif not pdec["passed"] and pdec.get("detail"):
-                    sd["reasons"] = list(sd.get("reasons") or []) + [pdec["detail"]]
+                elif not composed.get("passed", True) and composed.get("detail"):
+                    sd["reasons"] = list(sd.get("reasons") or []) + [composed["detail"]]
                 return sd
             for asset in cfg.assets:
                 for horizon in cfg.horizons:
@@ -437,8 +485,8 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         risk_halt=risk_halt, holding=bool(m and m.slug in open_slugs),
                         at_max_positions=open_count >= eff.max_concurrent_positions,
                         max_positions=eff.max_concurrent_positions,
-                        stake_up=stake_for(up, m, cash, eff, float(((sds.get("up") or {}).get("pattern") or {}).get("mult") or 1.0)),
-                        stake_down=stake_for(down, m, cash, eff, float(((sds.get("down") or {}).get("pattern") or {}).get("mult") or 1.0)),
+                        stake_up=stake_for(up, m, cash, eff, float((((sds.get("up") or {}).get("learning") or (sds.get("up") or {}).get("pattern") or {}).get("mult") or 1.0))),
+                        stake_down=stake_for(down, m, cash, eff, float((((sds.get("down") or {}).get("learning") or (sds.get("down") or {}).get("pattern") or {}).get("mult") or 1.0))),
                     )
                     row.update({
                         "verdict": v["verdict"], "verdict_side": v["side"], "reason": v["reason"],
@@ -516,15 +564,21 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
     from ..models import Signal
     from .. import strategies as strat
     from .. import patterns as pat
+    from .. import bandit as ban
+    from .. import learning_runtime as learn
     store = Store(cfg.sqlite_path, cfg.trades_csv, cfg.evaluations_csv, cfg.equity_csv)
     risk = RiskManager(cfg)
     state, cash = restore_state(cfg, store, risk)
     executor = PaperExecutor(cfg, store, risk, state)
     active_w = strat.ActiveWatcher(cfg.sqlite_path.parent)
-    pstore = pat.load_pattern_store(cfg.sqlite_path.parent, prior_strength=cfg.pattern_prior_strength)
+    data_dir = cfg.sqlite_path.parent
+    pstore = pat.load_pattern_store(data_dir, prior_strength=cfg.pattern_prior_strength)
     pstore.sync_from_orders(store.active_orders(), tz_name=cfg.timezone, cfg=cfg,
                             trade_patterns=store.all_trade_patterns())
-    pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
+    bstore = ban.load_bandit(data_dir, prior_strength=cfg.pattern_prior_strength)
+    # learn.startup (CF ingest + calibration of ~48k rows) can take longer than the
+    # watchdog's 8s first-beat grace, so it MUST run inside the guarded loop after
+    # HeartbeatKeeper has already started. See 2026-11-25 04:11 AM ET stale_heartbeat.
     open_features: dict[str, tuple[dict, dict]] = {}
     shadow_logged: set[str] = set()
     executor.cash = cash
@@ -589,7 +643,13 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
         })
         if pstore.update_trade(feat_rec, order_id=order.id, pnl_usd=order.pnl_usd,
                                cost_usd=cost, outcome=order.result or ("win" if order.pnl_usd > 0 else "loss")):
-            pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
+            pat.save_pattern_store(data_dir, pstore)
+        try:
+            learn.on_settlement(order, feat_rec, {"pattern": pdec, "bandit": (pdec or {}).get("_bandit"),
+                                                   "composed": (pdec or {}).get("_composed")},
+                                executor.cfg, store, pstore, bstore, data_dir)
+        except Exception:
+            pass
 
     def flatten(books_d: dict, flatten_id: int) -> None:
         closed, total = 0, 0.0
@@ -638,7 +698,15 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
         return f"watchdog heartbeat {age:.0f}s old" if age > 30 else None
 
     def loop():
-        nonlocal last_equity, handled_flatten
+        nonlocal last_equity, handled_flatten, pstore, bstore
+        try:
+            stats = learn.startup(cfg, store, pstore, bstore, data_dir)
+            bus.event("learning", "execution",
+                      f"phase6 backfill attribution={stats['attribution']} cf={stats['counterfactuals']} evals={stats['eval_rows']}")
+        except Exception as e:
+            bus.event("learning", "execution", f"phase6 startup skipped: {e}")
+        pat.save_pattern_store(data_dir, pstore)
+        ban.save_bandit(data_dir, bstore)
         while not stop["stop"]:
             halted = latch.is_halted()
             lost = None if halted else watchdog_lost()
@@ -732,25 +800,28 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         rule_checks=list(raw.get("rule_checks") or []),
                     )
                     raw_feat = raw.get("pattern_features") or pat.extract_features(raw, tz_name=tz, cfg=executor.cfg, strategy=act["active"])
-                    raw_pat = pstore.evaluate(
-                        raw_feat,
-                        mode=executor.cfg.pattern_mode,
-                        min_samples=executor.cfg.pattern_min_samples,
-                        min_mult=executor.cfg.pattern_min_mult,
-                        max_mult=executor.cfg.pattern_max_mult,
-                        skip_ev_threshold=executor.cfg.pattern_skip_ev_threshold,
-                        record_shadow=(executor.cfg.pattern_mode == "shadow" and cid not in shadow_logged),
+                    layer = learn.decisions_for(
+                        raw_feat, executor.cfg, pstore, bstore, data_dir,
+                        record_shadow=(cid not in shadow_logged),
                     )
-                    if executor.cfg.pattern_mode == "shadow" and cid not in shadow_logged:
+                    raw_pat = dict(layer["pattern"])
+                    raw_pat["_bandit"] = layer["bandit"]
+                    raw_pat["_composed"] = layer["composed"]
+                    if cid not in shadow_logged:
                         shadow_logged.add(cid)
                         if len(shadow_logged) > 2000:
                             shadow_logged.clear()
                         if raw_pat.get("would_action") in ("skip", "reduce", "boost"):
                             bus.event("pattern", "execution", str(raw_pat.get("detail") or ""), slug=slug)
-                        pat.save_pattern_store(cfg.sqlite_path.parent, pstore)
-                    if executor.cfg.pattern_mode == "active" and not raw_pat.get("passed", True):
+                        if layer["bandit"].get("would_action") and layer["bandit"].get("mode") == "shadow":
+                            if layer["bandit"]["would_action"] != "1.0":
+                                bus.event("bandit", "execution", str(layer["bandit"].get("detail") or ""), slug=slug)
+                        pat.save_pattern_store(data_dir, pstore)
+                        ban.save_bandit(data_dir, bstore)
+                    composed = layer["composed"]
+                    if not composed.get("passed", True):
                         continue
-                    pm = float(raw_pat.get("mult") or 1.0) if executor.cfg.pattern_mode == "active" else 1.0
+                    pm = float(composed.get("mult") or 1.0)
                     # Interlock check immediately before the fill — never skip this.
                     if latch.is_halted():
                         break

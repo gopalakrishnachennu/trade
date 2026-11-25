@@ -8,13 +8,15 @@ if [[ "${1:-}" != "--yes" ]]; then
   exit 2
 fi
 PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
-PYTHONPATH="$ROOT/src" "$PYTHON" - <<'PY'
+export PM_RUNTIME="$ROOT/data/runtime"
+export PYTHONPATH="$ROOT/src"
+"$PYTHON" - <<'PY'
 from pathlib import Path
-import sys
-sys.path.insert(0, str(Path("src") if Path("src").exists() else Path("/workspace/polymarket-bot/src")))
+import os, sys
+sys.path.insert(0, os.environ["PYTHONPATH"])
 from polymarket_bot.runtime.interlock import HaltLatch
 from polymarket_bot.runtime.bus import Bus
-root = Path("/workspace/polymarket-bot/data/runtime")
+root = Path(os.environ["PM_RUNTIME"])
 latch = HaltLatch(root / "HALT.json")
 before = latch.read()
 latch.reset(yes=True)

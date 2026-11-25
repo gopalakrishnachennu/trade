@@ -212,6 +212,51 @@ class Config:
     def pattern_skip_ev_threshold(self) -> float:
         return float(_get(self.raw, "patterns", "skip_ev_threshold", default=-0.02))
 
+    def _mode3(self, *path, default: str = "shadow") -> str:
+        v = str(_get(self.raw, *path, default=default))
+        return v if v in ("off", "shadow", "active") else default
+
+    @property
+    def attribution_mode(self) -> str:
+        return self._mode3("patterns", "attribution_mode", default="shadow")
+
+    @property
+    def counterfactual_mode(self) -> str:
+        return self._mode3("patterns", "counterfactual_mode", default="shadow")
+
+    @property
+    def cf_weight(self) -> float:
+        return max(0.0, min(1.0, float(_get(self.raw, "patterns", "cf_weight", default=0.25))))
+
+    @property
+    def calibration_mode(self) -> str:
+        return self._mode3("patterns", "calibration_mode", default="shadow")
+
+    @property
+    def calibration_method(self) -> str:
+        v = str(_get(self.raw, "patterns", "calibration_method", default="isotonic"))
+        return v if v in ("isotonic", "platt") else "isotonic"
+
+    @property
+    def bandit_mode(self) -> str:
+        return self._mode3("patterns", "bandit_mode", default="shadow")
+
+    @property
+    def rules_lab_mode(self) -> str:
+        return self._mode3("rules_lab", "mode", default="shadow")
+
+    @property
+    def rules_lab_auto_promote(self) -> bool:
+        return bool(_get(self.raw, "rules_lab", "auto_promote", default=False))
+
+    @property
+    def rules_lab_auto_demote(self) -> bool:
+        return bool(_get(self.raw, "rules_lab", "auto_demote", default=True))
+
+    @property
+    def rules_lab_min_trades(self) -> int:
+        return max(5, int(_get(self.raw, "rules_lab", "min_shadow_trades", default=30)))
+
     # ---- dynamic profit target (risk.profit_lock)
     @property
     def target_mode(self) -> str:
