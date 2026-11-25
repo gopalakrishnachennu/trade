@@ -139,6 +139,243 @@ def edge_bucket_for(edge: Optional[float]) -> str:
     return ">=8%"
 
 
+def horizon_seconds(horizon: str) -> float:
+    return {"5m": 300.0, "15m": 900.0, "1h": 3600.0}.get(str(horizon or ""), 900.0)
+
+
+def infer_window_start(now_ts: Optional[float], seconds_remaining: Optional[float], horizon: str) -> Optional[float]:
+    if now_ts is None:
+        return None
+    return float(now_ts) + float(seconds_remaining if seconds_remaining is not None else 0.0) - horizon_seconds(horizon)
+
+
+def side_sign(side: str) -> float:
+    s = (side or "").lower()
+    if s == "up":
+        return 1.0
+    if s == "down":
+        return -1.0
+    return 0.0
+
+
+def normalize_ticks(ticks: Any) -> list[tuple[float, float]]:
+    """Deduped, time-sorted (ts, spot) from hist [{ts, close|spot}] or path points."""
+    raw: dict[float, float] = {}
+    for pt in ticks or []:
+        if isinstance(pt, (tuple, list)) and len(pt) >= 2:
+            t, px = _f(pt[0]), _f(pt[1])
+        elif isinstance(pt, dict):
+            t = _f(pt.get("ts") if pt.get("ts") is not None else pt.get("ts_unix"))
+            px = _f(pt.get("spot") if pt.get("spot") is not None else pt.get("close") or pt.get("price"))
+        else:
+            continue
+        if t is None or px is None or px <= 0:
+            continue
+        raw[float(t)] = float(px)
+    return sorted(raw.items())
+
+
+def _price_asof(ticks: list[tuple[float, float]], t: float) -> Optional[tuple[float, float]]:
+    """Last tick at or before t, or None."""
+    chosen = None
+    for ts, px in ticks:
+        if ts <= t + 1e-9:
+            chosen = (ts, px)
+        else:
+            break
+    return chosen
+
+
+def _price_near(ticks: list[tuple[float, float]], t_target: float, t_now: float, max_lag: float = 20.0) -> Optional[float]:
+    """Price at t_target using only ticks with ts <= t_now (no lookahead).
+
+    Accepts the last tick in [t_target - max_lag, min(t_target, t_now)].
+    """
+    hi = min(float(t_target), float(t_now)) + 1e-9
+    lo = float(t_target) - float(max_lag)
+    chosen = None
+    for ts, px in ticks:
+        if ts > hi:
+            break
+        if ts + 1e-12 >= lo:
+            chosen = px
+    return chosen
+
+
+def signed_move_sigma(p_now: Optional[float], p_then: Optional[float], vol: Optional[float],
+                      dt_seconds: Optional[float], side: str) -> Optional[float]:
+    """Log return over dt, in σ units, signed so + means the move agrees with `side`."""
+    if p_now is None or p_then is None or vol is None or dt_seconds is None:
+        return None
+    if p_now <= 0 or p_then <= 0 or vol <= 0 or dt_seconds <= 1e-6:
+        return None
+    sig = float(vol) * math.sqrt(float(dt_seconds) / SECONDS_PER_YEAR)
+    if sig <= 1e-12:
+        return None
+    raw = math.log(float(p_now) / float(p_then)) / sig
+    ss = side_sign(side)
+    if ss == 0.0:
+        return None
+    return round(raw * ss, 4)
+
+
+def count_strike_crosses(ticks: list[tuple[float, float]], strike: float, t_start: float, t_now: float) -> int:
+    """Crossings of `strike` on ticks with t_start <= ts <= t_now. No lookahead."""
+    signs: list[int] = []
+    n = 0
+    eps = 1e-12 * max(1.0, abs(float(strike)))
+    for ts, px in ticks:
+        if ts < t_start - 1e-9:
+            continue
+        if ts > t_now + 1e-9:
+            break
+        d = float(px) - float(strike)
+        if abs(d) <= eps:
+            continue
+        s = 1 if d > 0 else -1
+        if signs and s != signs[-1]:
+            n += 1
+        if not signs or s != signs[-1]:
+            signs.append(s)
+    return n
+
+
+def drift_direction(spot: Optional[float], strike: Optional[float], side: str) -> str:
+    if spot is None or strike is None or side_sign(side) == 0.0:
+        return "unknown"
+    if abs(float(spot) - float(strike)) <= 1e-12 * max(1.0, abs(float(strike))):
+        return "flat"
+    implied = "up" if float(spot) >= float(strike) else "down"
+    return "with" if implied == (side or "").lower() else "against"
+
+
+def signed_drift(spot: Optional[float], strike: Optional[float], side: str) -> Optional[float]:
+    """+1 if spot is on the bet's side of the strike, -1 if against, 0 if flat."""
+    d = drift_direction(spot, strike, side)
+    if d == "with":
+        return 1.0
+    if d == "against":
+        return -1.0
+    if d == "flat":
+        return 0.0
+    return None
+
+
+def mom_bucket_for(mom: Optional[float]) -> str:
+    if mom is None:
+        return "unknown"
+    x = float(mom)
+    if x <= -1.0:
+        return "<=-1σ"
+    if x <= -0.25:
+        return "-1--0.25σ"
+    if x < 0.25:
+        return "-0.25-+0.25σ"
+    if x < 1.0:
+        return "0.25-1σ"
+    return ">=1σ"
+
+
+def crosses_bucket_for(n: Optional[int]) -> str:
+    if n is None:
+        return "unknown"
+    k = int(n)
+    if k <= 0:
+        return "0"
+    if k == 1:
+        return "1"
+    if k <= 3:
+        return "2-3"
+    return "4+"
+
+
+ENTRY_FEATURE_KEYS = (
+    "mom_1m", "mom_3m", "mom_window", "strike_cross_count",
+    "drift_dir", "signed_drift", "mom_1m_bucket", "mom_3m_bucket",
+    "mom_window_bucket", "crosses_bucket",
+)
+
+
+def entry_features(
+    ticks: Any,
+    *,
+    now_ts: float,
+    side: str,
+    strike: Optional[float],
+    vol: Optional[float],
+    horizon: str,
+    seconds_remaining: Optional[float],
+    spot: Optional[float] = None,
+    max_lag: float = 20.0,
+) -> dict[str, Any]:
+    """Entry-time path features. Ticks with ts > now_ts are ignored (zero lookahead)."""
+    pts = normalize_ticks(ticks)
+    # Hard no-lookahead clip
+    pts = [(t, p) for t, p in pts if t <= float(now_ts) + 1e-9]
+    out: dict[str, Any] = {k: None for k in ENTRY_FEATURE_KEYS}
+    out["drift_dir"] = "unknown"
+    out["crosses_bucket"] = "unknown"
+    out["mom_1m_bucket"] = "unknown"
+    out["mom_3m_bucket"] = "unknown"
+    out["mom_window_bucket"] = "unknown"
+
+    cur = _price_asof(pts, now_ts)
+    p_now = spot if (spot is not None and spot > 0) else (cur[1] if cur else None)
+    if p_now is None:
+        return out
+
+    out["drift_dir"] = drift_direction(p_now, strike, side)
+    out["signed_drift"] = signed_drift(p_now, strike, side)
+
+    p_1 = _price_near(pts, float(now_ts) - 60.0, now_ts, max_lag=max_lag)
+    p_3 = _price_near(pts, float(now_ts) - 180.0, now_ts, max_lag=max_lag)
+    out["mom_1m"] = signed_move_sigma(p_now, p_1, vol, 60.0, side) if p_1 is not None else None
+    out["mom_3m"] = signed_move_sigma(p_now, p_3, vol, 180.0, side) if p_3 is not None else None
+    out["mom_1m_bucket"] = mom_bucket_for(out["mom_1m"])
+    out["mom_3m_bucket"] = mom_bucket_for(out["mom_3m"])
+
+    ws = infer_window_start(now_ts, seconds_remaining, horizon)
+    if ws is not None and strike is not None:
+        out["strike_cross_count"] = count_strike_crosses(pts, float(strike), ws, now_ts)
+        out["crosses_bucket"] = crosses_bucket_for(out["strike_cross_count"])
+        # mom_window only if we actually observed the start of the window (no silent lookahead, no silent gap).
+        cover = max(20.0, 0.05 * horizon_seconds(horizon))
+        p_open = _price_near(pts, ws, now_ts, max_lag=cover)
+        # _price_near looks in [ws - cover, ws]; we also accept the first tick shortly *after* open, still <= now.
+        if p_open is None:
+            first = None
+            for t, p in pts:
+                if t < ws - 1e-9:
+                    continue
+                if t > now_ts + 1e-9:
+                    break
+                first = (t, p)
+                break
+            if first is not None and first[0] - ws <= cover:
+                p_open = first[1]
+        dt_w = max(1.0, float(now_ts) - float(ws))
+        if p_open is not None:
+            out["mom_window"] = signed_move_sigma(p_now, p_open, vol, dt_w, side)
+        out["mom_window_bucket"] = mom_bucket_for(out["mom_window"])
+    return out
+
+
+def paths_from_eval_rows(rows: Any, tz_name: str = "America/New_York") -> dict[str, list[tuple[float, float]]]:
+    """market_slug -> unique (ts, spot) ticks. Caller must still clip to decision time."""
+    from .analytics import ts_unix
+    acc: dict[str, dict[float, float]] = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        slug = str(r.get("market_slug") or "")
+        spot = _f(r.get("spot"))
+        t = ts_unix(r.get("ts"), tz_name)
+        if not slug or spot is None or spot <= 0 or t is None:
+            continue
+        acc.setdefault(slug, {})[float(t)] = float(spot)
+    return {k: sorted(v.items()) for k, v in acc.items()}
+
+
 def extract_features(
     row: Any,
     *,
@@ -146,6 +383,7 @@ def extract_features(
     tz_name: str = "America/New_York",
     cfg=None,
     strategy: Optional[str] = None,
+    ticks: Any = None,
 ) -> dict[str, Any]:
     """Extract normalized pattern features from a Signal, signal dict, PaperOrder, or eval row."""
     g = (lambda k, d=None: row.get(k, d)) if isinstance(row, dict) else (lambda k, d=None: getattr(row, k, d))
@@ -176,7 +414,7 @@ def extract_features(
     edge = _f(g("edge_after_fees"))
     if edge is None:
         edge = _f(g("edge"))
-    return {
+    feat = {
         "ts": dt.isoformat(),
         "ts_unix": round(dt.timestamp(), 3),
         "market_slug": str(g("market_slug") or ""),
@@ -202,6 +440,32 @@ def extract_features(
         "minutes_bucket": minutes_bucket_for(minutes_left),
         "edge_bucket": edge_bucket_for(edge),
     }
+    # Pass through any already-captured entry features (e.g. from a stored pattern row).
+    for k in ENTRY_FEATURE_KEYS:
+        if feat.get(k) is None:
+            v = g(k)
+            if v is not None and v != "":
+                feat[k] = v
+    if ticks:
+        feat.update(entry_features(
+            ticks,
+            now_ts=float(feat["ts_unix"]),
+            side=side,
+            strike=strike,
+            vol=vol,
+            horizon=horizon,
+            seconds_remaining=sr,
+            spot=spot,
+        ))
+    else:
+        feat.setdefault("drift_dir", drift_direction(spot, strike, side) if strike is not None else feat.get("drift_dir") or "unknown")
+        if feat.get("signed_drift") is None:
+            feat["signed_drift"] = signed_drift(spot, strike, side)
+        feat.setdefault("mom_1m_bucket", mom_bucket_for(feat.get("mom_1m")))
+        feat.setdefault("mom_3m_bucket", mom_bucket_for(feat.get("mom_3m")))
+        feat.setdefault("mom_window_bucket", mom_bucket_for(feat.get("mom_window")))
+        feat.setdefault("crosses_bucket", crosses_bucket_for(feat.get("strike_cross_count")))
+    return feat
 
 
 @dataclass

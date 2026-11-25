@@ -2,6 +2,14 @@
 
 All times ET.
 
+## 2026-11-25 (04:20+) — Entry-time path features and analyst shadow rules
+
+- Added **entry-time** path features, computed only from index ticks at or before the decision: `mom_1m`, `mom_3m`, `mom_window` (log return in σ units, signed so + means the move agrees with the bet side), `strike_cross_count`, and `drift_dir` / `signed_drift` (index vs strike). These are the actionable versions of the hindsight “against trend” / “last-minute flip” labels.
+- Features are backfilled from stored evaluation ticks (walk-forward, no lookahead) and computed live from the index-feed history. They are on the rules-lab DSL allowlist. Missing values do not match a rule.
+- `scripts/entry_feature_report.py` prints win rate and fee-aware net EV by those buckets (and minutes_left, model P) per horizon.
+- Analyst rules that pass a walk-forward backtest (better net P&L, drawdown not worse, adequate n) are submitted with `propose_rule.py` and stay in **shadow** (auto-promote remains off). First three: `skip-mid-prob-0.4-0.5`, `skip-mom-window-chop`, `skip-15m-against-mom-1m`.
+- Execution still starts `HeartbeatKeeper` before any learning backfill.
+
 ## 2026-11-25 (04:00+) — Phase 6: loss attribution, counterfactual learning, calibration, contextual bandit, rules lab
 
 Phase 6 **extends** the Phase 4 pattern layer and the Phase 5 risk stack; it does not replace them. Every new feature is switchable `off` / `shadow` / `active` from versioned config and Controls (no redeploy). Defaults are **shadow**. Paper only.

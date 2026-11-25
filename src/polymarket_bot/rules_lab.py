@@ -31,6 +31,9 @@ ALLOWED_FIELDS = frozenset({
     "minutes_left", "minutes_bucket", "distance_sigma", "distance_bucket",
     "vol_regime", "annualized_vol", "model_prob", "ask", "edge", "spread",
     "depth_contracts", "depth_usd", "strategy", "edge_bucket",
+    # Entry-time path features (computed only from ticks at or before the decision).
+    "mom_1m", "mom_3m", "mom_window", "mom_1m_bucket", "mom_3m_bucket", "mom_window_bucket",
+    "strike_cross_count", "crosses_bucket", "drift_dir", "signed_drift",
 })
 ALLOWED_OPS = frozenset({"eq", "ne", "lt", "lte", "gt", "gte", "in", "not_in"})
 ALLOWED_ACTIONS = frozenset({"skip", "size_mult"})

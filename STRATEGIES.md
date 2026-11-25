@@ -86,3 +86,7 @@ Analyst (human or agent) rule proposals are **not** a new strategy and do not re
 - Promotion: ≥ 30 live shadow trades, better net P&L than the champion, drawdown not worse. Auto-promote is off; auto-demote is on. Manual approve/reject is on `/rules-lab`.
 - When an LLM key is added later, `reviewer.py` will enqueue `rule_proposals` onto the same queue.
 - Snapshot for the analyst: `PYTHONPATH=src .venv/bin/python scripts/analyst_snapshot.py --data /opt/polymarket-bot/data`.
+
+## Entry-time path features
+
+`mom_1m`, `mom_3m`, `mom_window` (σ-units, signed with the bet side), `strike_cross_count`, and `drift_dir` / `signed_drift` are computed from index ticks at or before the decision only. They can be used in rules-lab proposals. Hindsight labels such as last-minute flip are not in the DSL.

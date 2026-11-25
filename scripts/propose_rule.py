@@ -17,6 +17,7 @@ walk-forward backtested on stored evaluations, then placed in shadow.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sys
 from pathlib import Path
@@ -70,6 +71,7 @@ def main(argv=None) -> int:
     ap.add_argument("--rationale", default="")
     ap.add_argument("--actor", default="analyst")
     ap.add_argument("--stake", type=float, default=10.0)
+    ap.add_argument("--all", action="store_true", help="include data/archive/**/evaluations.csv")
     a = ap.parse_args(argv)
 
     if a.json_path:
@@ -94,7 +96,12 @@ def main(argv=None) -> int:
     ev_csv = data_dir / "evaluations.csv" if a.data else cfg.evaluations_csv
     rec = rl.enqueue_proposal(data_dir, rule, actor=a.actor, rationale=rule.get("rationale") or "", source="analyst")
 
-    rows = learn.load_eval_rows(ev_csv)
+    paths = [ev_csv]
+    if a.all:
+        paths = [Path(p) for p in sorted(glob.glob(str(data_dir / "archive/**/evaluations.csv"), recursive=True))] + [ev_csv]
+    rows = []
+    for pth in paths:
+        rows.extend(learn.load_eval_rows(pth))
     outcome, settle = cal.index_outcomes(rows, tz_name=cfg.timezone)
     examples = cal.iter_counterfactuals(rows, outcome, settle, tz_name=cfg.timezone, theta=cfg.fee_theta)
     # only rows that already settled; already implicit if we use all historical

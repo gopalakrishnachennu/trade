@@ -19,7 +19,7 @@ from typing import Any, Iterable, Optional
 
 from .analytics import DEFAULT_TZ, ts_unix
 from .fees import fee_per_contract, taker_fee_usd
-from .patterns import _f, extract_features
+from .patterns import _f, extract_features, paths_from_eval_rows
 
 CF_PREFIX = "cf:"
 
@@ -80,6 +80,7 @@ def iter_counterfactuals(
     per (slug, side, ts) so NO TRADE rows are included when include_no_trade is True.
     """
     rows = list(rows)
+    paths = paths_from_eval_rows(rows, tz_name=tz_name)
     out: list[dict[str, Any]] = []
     for r in rows:
         slug = str(r.get("market_slug") or "")
@@ -99,7 +100,10 @@ def iter_counterfactuals(
             continue
         won = outcome[slug] == side
         pnl, cost, fee = unit_pnl(ask, won, theta=theta, stake=stake)
-        feat = extract_features(r, ts=r.get("ts"), tz_name=tz_name)
+        feat = extract_features(
+            r, ts=r.get("ts"), tz_name=tz_name,
+            ticks=paths.get(slug),  # clipped to t inside entry_features; no lookahead
+        )
         out.append({
             "id": f"{CF_PREFIX}{slug}:{side}:{t}",
             "ts": t,

@@ -140,7 +140,11 @@ All learning layers default to **shadow** and can be flipped from Controls (Term
 
       PYTHONPATH=src .venv/bin/python scripts/analyst_snapshot.py --data /opt/polymarket-bot/data
 
-- Propose a rule:
+- Entry-time feature buckets (first would-trade snapshot, all would-trade snapshots, and real fills):
+
+      PYTHONPATH=src .venv/bin/python scripts/entry_feature_report.py --all --data /opt/polymarket-bot/data --stake 10
+
+- Propose a rule (add `--all` to include archived evaluations in the walk-forward backtest):
 
       PYTHONPATH=src .venv/bin/python scripts/propose_rule.py \
         --name skip-high-vol-late-5m --action skip \

@@ -133,9 +133,20 @@ class Store:
             """
         )
         self.conn.commit()
+        self._ensure_columns("trade_patterns", [
+            ("mom_1m", "REAL"), ("mom_3m", "REAL"), ("mom_window", "REAL"),
+            ("strike_cross_count", "INTEGER"), ("drift_dir", "TEXT"), ("signed_drift", "REAL"),
+        ])
         self._init_csv(self.trades_csv, TRADES_FIELDS)
         self._init_csv(self.evaluations_csv, EVAL_FIELDS)
         self._init_csv(self.equity_csv, ["ts", "cash", "open_exposure", "realized_pnl", "equity", "open_positions"])
+
+    def _ensure_columns(self, table: str, cols: list[tuple[str, str]]) -> None:
+        existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols:
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+        self.conn.commit()
 
     def _init_csv(self, path: Path, fields: list[str]) -> None:
         if not path.exists():
@@ -243,6 +254,8 @@ class Store:
             "edge", "spread", "depth_contracts", "depth_usd", "strategy", "outcome",
             "pnl_usd", "cost_usd", "roi", "pattern_mode", "pattern_action",
             "pattern_mult", "pattern_context",
+            "mom_1m", "mom_3m", "mom_window", "strike_cross_count",
+            "drift_dir", "signed_drift",
         ]
         placeholders = ",".join(["?"] * len(cols))
         updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "order_id")

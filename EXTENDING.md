@@ -48,3 +48,7 @@ Keep the same URL and token. Keep Caddy in front of uvicorn on 127.0.0.1. Never 
 ## Add a learning layer
 
 Compose it in `learning_runtime.decisions_for` / `compose_learning` rather than replacing `PatternStore`. Shadow/off must not change `passed` or the live multiplier. Skip via `passed=False`. Hard caps stay last in `size_order`. Add a Controls `Field` (`off|shadow|active`) and tests that the layer cannot loosen INVARIANTS 1, 2, 3, 7 and 13.
+
+## Add an entry-time feature
+
+Compute it in `patterns.entry_features` from ticks with `ts <= now_ts` only. Add the name to `ENTRY_FEATURE_KEYS` and to `rules_lab.ALLOWED_FIELDS`. Missing values must not match a rule. Backfill via `paths_from_eval_rows` in `iter_counterfactuals`. Do not use the post-entry path (that is attribution, not a live feature).

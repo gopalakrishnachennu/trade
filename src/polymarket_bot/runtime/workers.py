@@ -377,7 +377,10 @@ def run_engine(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                 sd = signal_to_dict(s)
                 base_checks = list(sd.get("rule_checks") or [])
                 passed, checks = strat.evaluate(act["active"], act["params"], sd, eff.min_edge)
-                feat = pat.extract_features(sd, ts=now_unix, tz_name=tz, cfg=eff, strategy=act["active"])
+                feat = pat.extract_features(
+                    sd, ts=now_unix, tz_name=tz, cfg=eff, strategy=act["active"],
+                    ticks=hist.get(s.asset) or hist.get((s.asset or "").lower()) or [],
+                )
                 layer = learn.decisions_for(feat, eff, pstore, bholder[0], data_dir, record_shadow=False)
                 pdec, bdec, rdec, composed = layer["pattern"], layer["bandit"], layer["rule"], layer["composed"]
                 if checks is not None:
@@ -639,6 +642,12 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
             "pattern_mode": pdec.get("mode"),
             "pattern_action": pdec.get("would_action"),
             "pattern_mult": pdec.get("would_mult"),
+            "mom_1m": feat.get("mom_1m"),
+            "mom_3m": feat.get("mom_3m"),
+            "mom_window": feat.get("mom_window"),
+            "strike_cross_count": feat.get("strike_cross_count"),
+            "drift_dir": feat.get("drift_dir"),
+            "signed_drift": feat.get("signed_drift"),
             "pattern_context": pdec.get("context"),
         })
         if pstore.update_trade(feat_rec, order_id=order.id, pnl_usd=order.pnl_usd,
@@ -799,7 +808,10 @@ def run_execution(cfg, bus: Bus, latch: HaltLatch, stop: dict) -> int:
                         reasons=list(raw.get("reasons") or []), passed=True,
                         rule_checks=list(raw.get("rule_checks") or []),
                     )
-                    raw_feat = raw.get("pattern_features") or pat.extract_features(raw, tz_name=tz, cfg=executor.cfg, strategy=act["active"])
+                    raw_feat = raw.get("pattern_features") or pat.extract_features(
+                        raw, tz_name=tz, cfg=executor.cfg, strategy=act["active"],
+                        ticks=hist.get(raw.get("asset")) or hist.get((raw.get("asset") or "").lower()) or [],
+                    )
                     layer = learn.decisions_for(
                         raw_feat, executor.cfg, pstore, bstore, data_dir,
                         record_shadow=(cid not in shadow_logged),
